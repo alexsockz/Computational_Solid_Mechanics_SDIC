@@ -12,6 +12,9 @@ build/
 # Exclude .egg-info directories
 *.egg-info/
 
+#exclude python virtual environment
+venv
+
 # User-specific files
 *.rsuser
 *.suo
