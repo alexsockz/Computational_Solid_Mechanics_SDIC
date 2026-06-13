@@ -1,0 +1,36 @@
+# global defaults, overridable per element
+defaults:
+  E: 210e9
+  A: 0.01
+  shape_func: linear
+
+nodes:
+  - id: 0
+    x: 0.0
+    y: 0.0
+    constraints: [ux, uy]      # pin support
+  
+  - id: 1
+    x: 1.0
+    y: 0.0
+    force: [1000, 0]           # 1000N in x direction
+  
+  - id: 2
+    x: 1.0
+    y: 1.0
+    constraints: [uy]          # roller support
+    inclined_support: 45       # optional
+
+elements:
+  - id: 0
+    nodes: [0, 1]
+    # uses global E and A
+
+  - id: 1
+    nodes: [1, 2]
+    E: 70e9                    # override: aluminum
+    A: 0.005                   # override: thinner
+
+  - id: 2
+    nodes: [0, 2]
+    shape_func: quadratic      # override: quadratic

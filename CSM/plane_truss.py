@@ -1,11 +1,14 @@
 """Module for solving 2D plane truss problems."""
 
 import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import yaml
 class PlaneTrussProblem:
     """Class for solving 2D plane truss problems."""
-    
+    MESSAGE_NODE_IDX="Node index out of range."
+    MESSAGE_ELEMENT_IDX="Element index out of range."
     def __init__(self, nodes, elements, elasticity_modulus, cross_sectional_area, shape_func="linear"):
         """
         Initialize the plane truss problem.
@@ -29,10 +32,10 @@ class PlaneTrussProblem:
         self.elements = np.array(elements)
         self.num_nodes = len(nodes)
         self.num_elements = len(elements)
-        self.E = np.full(self.num_elements,elasticity_modulus)
-        self.A = np.full(self.num_elements,cross_sectional_area)
 
-        #TODO getter of shape function
+        self.E = self.__into_array_if_not(elasticity_modulus)            
+        self.A = self.__into_array_if_not(cross_sectional_area)
+
         self.shape_func = shape_func
         
         # Perform initial checks
@@ -76,42 +79,23 @@ class PlaneTrussProblem:
             x2, y2 = self.nodes[n2]
             print(x1, y1)
             print(x2, y2)
-            self.angles[i] = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi  # Angles in degrees
+            self.angles[i] = np.arctan2(y2 - y1, x2 - x1)
             
             if self.angles[i] < 0:
-                self.angles[i] += 360
+                self.angles[i] += 2*np.pi
         
         #create middle points of elements for quadratic shape_func
         if self.shape_func != "linear":
-            nodes_per_element = {"quadratic": 3, "cubic": 4}[self.shape_func]
-            n_interior = nodes_per_element - 2  # 1 for quadratic, 2 for cubic
-            num_seg = nodes_per_element - 1
-
-            new_nodes = []
-            new_elements = []
-
-            for i, [n1, n2] in enumerate(self.elements):
-                interior_ids = []
-                for n in range(n_interior):
-                    x_pos = self.nodes[n1][0] + (n+1) * (self.nodes[n2][0] - self.nodes[n1][0]) / num_seg
-                    y_pos = self.nodes[n1][1] + (n+1) * (self.nodes[n2][1] - self.nodes[n1][1]) / num_seg
-                    new_node_id = self.num_nodes + len(new_nodes)
-                    new_nodes.append([x_pos, y_pos])
-                    interior_ids.append(new_node_id)
-                
-                new_elements.append([n1] + interior_ids + [n2])
-
-            if new_nodes:
-                self.nodes = np.vstack([self.nodes, new_nodes])
-            self.elements = np.array(new_elements)
+            self.__add_mid_node()
 
         self.num_nodes = len(self.nodes)
 
         # Initialize global stiffness matrix
         self.k_global = np.zeros((2 * self.num_nodes, 2 * self.num_nodes))
 
+
     @classmethod
-    def load_file(cls,file_path:str):
+    def load_file(cls,file_path:str="structure.yaml"):
         """
         give in input a yaml file with the description of the nodes and object
         
@@ -122,8 +106,37 @@ class PlaneTrussProblem:
         """
         with open(file_path, "r") as file:
             structure = yaml.safe_load(file)
-
-
+        
+        n_elem=len(structure["elements"])
+        #globals: elastic modulus and cross sectional area should be a list, since i prepare it here
+        elastic_mod = np.full(n_elem,structure["defaults"]["E"])
+        cross_sec = np.full(n_elem,structure["defaults"]["A"])
+        #force and type of struct tbd
+        
+        #formatting the nodes
+        nodes, constraints, inclined_support, F = cls.__format_nodes(structure)
+        #formatting the elements
+        
+        elements=[]
+        for i,e in enumerate(structure["elements"]):
+        # already formatted as lists 
+            if(len(e["nodes"])==2):
+                elements.append(e["nodes"])
+            else:
+                raise ValueError("invalid element")
+        # elastic mod and cross sec area not necessary but can be set per element
+            if "E" in e:
+                elastic_mod[i]=e["E"]
+            if "A" in e:
+                cross_sec[i]=e["A"]
+        #per element's type tbd
+        
+        #remaining question: should i directly solve it? answer yes
+        truss= PlaneTrussProblem(nodes=nodes,elements=elements,elasticity_modulus=elastic_mod,cross_sectional_area=cross_sec,shape_func=structure["defaults"]["shape_func"])
+        truss.assemble_global_stiffness()
+        
+        truss.solve(F, constraints, inclined_support)
+        return truss
 
     def plot_plane_truss(self, show_node_indices=True, show_element_indices=True, show_deformed=False, scale_factor=1.0):
         """
@@ -147,7 +160,7 @@ class PlaneTrussProblem:
             if show_element_indices:
                 mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
                 plt.text(mid_x, mid_y, f"E{i}", color='blue', fontsize=12, ha='center', va='center',
-                         bbox=dict(facecolor='white', edgecolor='blue', boxstyle='round,pad=0.3'))
+                         bbox={"facecolor":'white', "edgecolor":'blue', "boxstyle":'round,pad=0.3'})
         
         # plot deformed structure
         if show_deformed and hasattr(self, 'displacements'):
@@ -178,9 +191,9 @@ class PlaneTrussProblem:
         
         """
         if element_index < 0 or element_index >= self.num_elements:
-            raise ValueError("Element index out of range.")
+            raise ValueError(self.MESSAGE_ELEMENT_IDX)
         
-        return self.angles[element_index]
+        return np.rad2deg(self.angles[element_index])
     
     def get_length(self, element_index):
         """
@@ -194,10 +207,11 @@ class PlaneTrussProblem:
         
         """
         if element_index < 0 or element_index >= self.num_elements:
-            raise ValueError("Element index out of range.")
+            raise ValueError(self.MESSAGE_ELEMENT_IDX)
         
         return self.L[element_index]
     
+    #REMOVE before release
     def ElementStiffness_old(self, element_index):
         """
         Compute the element stiffness matrix for a given element.
@@ -210,21 +224,19 @@ class PlaneTrussProblem:
         np.ndarray: Stiffness matrix of the element.
         
         """
-        #TODO generalize to a generic function, it's a bit of a hassle to deal with all the derivations
-
 
         if element_index < 0 or element_index >= self.num_elements:
-            raise ValueError("Element index out of range.")
+            raise ValueError(self.MESSAGE_ELEMENT_IDX)
         
-        x = self.angles[element_index] * np.pi / 180  # Convert angle to radians
+        x = self.angles[element_index] #already radians
         c = np.cos(x)
         s = np.sin(x)
         L = self.L[element_index]
         if(len(self.elements[element_index])==3):
             # FIX: Swap rows 2 and 3 with rows 4 and 5 to put the mid-node in the middle spatially
             T = np.array([[c, s, 0, 0, 0, 0],
-                        [0, 0, 0, 0, c, s],   # Node 2 (end node) maps to local position 2
-                        [0, 0, c, s, 0, 0]])  # Node 3 (mid node) maps to local position 3
+                          [0, 0, 0, 0, c, s],   # Node 2 (end node) maps to local position 2
+                          [0, 0, c, s, 0, 0]])  # Node 3 (mid node) maps to local position 3
             
             k_local = (self.E[element_index] * self.A[element_index] / (3*L)) * np.array([[7, 1, -8],
                                                                                         [1, 7, -8],
@@ -239,12 +251,20 @@ class PlaneTrussProblem:
 
     def ElementStiffness(self, element_index):    
         if element_index < 0 or element_index >= self.num_elements:
-            raise ValueError("Element index out of range.")
+            raise ValueError(self.MESSAGE_ELEMENT_IDX)
         
         L = self.L[element_index]
-        theta = self.angles[element_index] * np.pi / 180
+        theta = self.angles[element_index]
         print(self.get_angle(element_index))
         c, s = np.cos(theta), np.sin(theta)
+        #error correction because cos(1)!=0 in python, it gives a small number but it annoys me
+        if s>c:
+            a=np.sqrt(1-np.pow(s,2))
+            c=a if a<c else c
+        else:
+            a=np.sqrt(1-np.pow(c,2))
+            s=a if a<s else s
+
         print(self.angles[element_index] ,theta, c,s)
         n_nodes = len(self.elements[element_index])
         
@@ -292,6 +312,7 @@ class PlaneTrussProblem:
                     self.k_global[da, db] += k_local[a, b]
         return self.k_global
     
+    #REMOVE before release
     def assemble_global_stiffness_old(self):
         """
         Assemble the global stiffness matrix for the entire truss structure.
@@ -308,25 +329,27 @@ class PlaneTrussProblem:
                     self.k_global[da, db] += k_local[a, b]
         return self.k_global
     
-    def add_inclined_support(self, node_index, angle):
+    def add_inclined_support(self, node_and_angles:dict):
         """
         Add an inclined support to the truss at a specific node.
 
         Parameters:
-        node_index (int): Index of the node where the support is applied.
-        angle (float): Angle of the inclined support in degrees.
+        node_and_angles(dict {int:float}) = a dict of shape {node_number: angle_to_set}
         
         """
-        if node_index < 0 or node_index >= self.num_nodes:
-            raise ValueError("Node index out of range.")
-        
-        transformation_matrix = np.eye(2 * self.num_nodes)
-        x = angle * np.pi / 180  # Convert angle to radians
-        transformation_matrix[2*node_index, 2*node_index] = np.cos(x)
-        transformation_matrix[2*node_index, 2*node_index + 1] = np.sin(x)
-        transformation_matrix[2*node_index + 1, 2*node_index] = -np.sin(x)
-        transformation_matrix[2*node_index + 1, 2*node_index + 1] = np.cos(x)
-        self.k_global = transformation_matrix @ self.k_global @ (transformation_matrix.T)
+        for node_index in node_and_angles: 
+            print(node_and_angles, node_index)
+            angle = node_and_angles[node_index]
+            if node_index < 0 or node_index >= self.num_nodes:
+                raise ValueError(self.MESSAGE_NODE_IDX)
+            
+            transformation_matrix = np.eye(2 * self.num_nodes)
+            x = np.deg2rad(angle)  # Convert angle to radians
+            transformation_matrix[2*node_index, 2*node_index] = np.cos(x)
+            transformation_matrix[2*node_index, 2*node_index + 1] = np.sin(x)
+            transformation_matrix[2*node_index + 1, 2*node_index] = -np.sin(x)
+            transformation_matrix[2*node_index + 1, 2*node_index + 1] = np.cos(x)
+            self.k_global = transformation_matrix @ self.k_global @ (transformation_matrix.T)
     
     def set_external_constraints(self, constrained_dofs):
         """
@@ -342,7 +365,7 @@ class PlaneTrussProblem:
         free_dofs = np.setdiff1d(np.arange(2 * self.num_nodes), constrained_dofs)
         return self.k_global[np.ix_(free_dofs, free_dofs)]
     
-    def solve(self, external_forces, constrained_dofs):
+    def solve(self, external_forces, constrained_dofs, inclined_support={}):
         """
         Solve the truss problem for the given external forces and constraints.
 
@@ -371,7 +394,9 @@ class PlaneTrussProblem:
         #             transverse_dof = 2 * mid + 1
         #         if transverse_dof not in constrained_dofs:
         #             constrained_dofs.append(transverse_dof)
-                    
+        
+        if inclined_support != ():
+            self.add_inclined_support(inclined_support)
         total_dofs = 2 * self.num_nodes
         free_dof_indices = np.setdiff1d(np.arange(total_dofs), constrained_dofs)
         
@@ -424,7 +449,7 @@ class PlaneTrussProblem:
         
         """
         if node_index < 0 or node_index >= self.num_nodes:
-            raise ValueError("Node index out of range.")
+            raise ValueError(self.MESSAGE_NODE_IDX)
         
         return self.displacements[2*node_index], self.displacements[2*node_index + 1]
     
@@ -441,7 +466,7 @@ class PlaneTrussProblem:
 
         """
         if element_index < 0 or element_index >= self.num_elements:
-            raise ValueError("Node index out of range.")
+            raise ValueError(self.MESSAGE_NODE_IDX)
         
         if x < -1 or x > 1:
             raise ValueError("Node position out of range.")
@@ -476,10 +501,10 @@ class PlaneTrussProblem:
         """
 
         if element_index < 0 or element_index >= self.num_elements:
-            raise ValueError("Element index out of range.")
+            raise ValueError(self.MESSAGE_ELEMENT_IDX)
 
         L = self.L[element_index]
-        theta = self.angles[element_index] * np.pi / 180
+        theta = self.angles[element_index]
         c, s = np.cos(theta), np.sin(theta)
         nodes = self.elements[element_index]
         n_nodes = len(nodes)
@@ -503,9 +528,69 @@ class PlaneTrussProblem:
         
         """
         if element_index < 0 or element_index >= self.num_elements:
-            raise ValueError("Element index out of range.")
+            raise ValueError(self.MESSAGE_ELEMENT_IDX)
         
         stress = self.get_element_stress(element_index, x)
         force = stress * self.A[element_index]
         return force
     
+
+    def __into_array_if_not(self,E) -> np.ndarray:
+        if isinstance(E,(str, float, int)):
+            return np.full(self.num_elements,E, dtype=np.float64)
+        elif np.issubdtype(E.dtype, str) or np.issubdtype(E.dtype, np.number):
+            return np.array(E, dtype=np.float64)
+        else:
+            raise ValueError("input value is neither a valid number nor an array of numbers")
+        
+    def __add_mid_node(self):
+        nodes_per_element = {"quadratic": 3, "cubic": 4}[self.shape_func]
+        n_interior = nodes_per_element - 2  # 1 for quadratic, 2 for cubic
+        num_seg = nodes_per_element - 1
+        new_nodes = []
+        new_elements = []
+        for i, [n1, n2] in enumerate(self.elements):
+            interior_ids = []
+            for n in range(n_interior):
+                x_pos = self.nodes[n1][0] + (n+1) * (self.nodes[n2][0] - self.nodes[n1][0]) / num_seg
+                y_pos = self.nodes[n1][1] + (n+1) * (self.nodes[n2][1] - self.nodes[n1][1]) / num_seg
+                new_node_id = self.num_nodes + len(new_nodes)
+                new_nodes.append([x_pos, y_pos])
+                interior_ids.append(new_node_id)
+            
+            new_elements.append([n1] + interior_ids + [n2])
+        if new_nodes:
+            self.nodes = np.vstack([self.nodes, new_nodes])
+        self.elements = np.array(new_elements)
+        
+    @classmethod
+    def __format_nodes(cls,structure):
+        #TODO add the importance of ID
+        nodes=[]
+        constraints=[]
+        inclined_support={}
+        applied_forces={}
+        for i,n in enumerate(structure["nodes"]):
+            #position
+            if "x" not in n or "y" not in n:
+                raise ValueError(f"missing x or y from node number {i}")
+            nodes.append((n["x"],n["y"]))
+            #constraints
+            if "constraints" in n:
+                for c in n["constraints"]:
+                    #add theta only if euler bernoully
+                    if c!="ux" and c!="uy":
+                        raise ValueError(f"{c} is not a valid constraint for this type of structure")
+                    else:
+                        constraints.append(i*2) if c=="ux" else constraints.append(i*2+1)
+            #inclined support
+            if "inclined_support" in n:
+                inclined_support[i]=n["inclined_support"]
+            #forces
+            if "force" in n:
+                    if n["force"][0]!=0:
+                        applied_forces[i*2]=n["force"][0]
+                    if n["force"][1]!=0:
+                        applied_forces[i*2+1]=n["force"][1]
+        #TODO maybe transform nodes from just a pair of coordinates to an object to also add personalized ids
+        return nodes, constraints, inclined_support, applied_forces
