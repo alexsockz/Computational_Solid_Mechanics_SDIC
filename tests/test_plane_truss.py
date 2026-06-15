@@ -79,13 +79,13 @@ def make_right_triangle(shape_func="linear"):
         shape_func=shape_func,
     )
 
-def solved_right_triangle():
+def solved_right_triangle(shape_func="linear"):
     """
     Assembled + solved right triangle truss.
     Constraints: 0, 1 (pin node 0) + 3 (roller y at node 1).
     Loads: Fx = 100.0 at node 2 (DOF 4), Fy = -50.0 at node 2 (DOF 5).
     """
-    truss = make_right_triangle()
+    truss = make_right_triangle(shape_func)
     truss.assemble_global_stiffness()
     truss.solve({4: 100.0, 5: -50.0}, constrained_dofs=[0, 1, 3])
     return truss
@@ -230,8 +230,8 @@ class TestElementStiffness:
     def test_linear_element_shape_is_4x4(self):
         assert make_single_bar().ElementStiffness(0).shape == (4, 4)
 
-    def test_quadratic_element_shape_is_6x6(self):
-        assert make_single_bar("quadratic").ElementStiffness(0).shape == (6, 6)
+    def test_quadratic_element_shape_is_4x4(self):
+        assert make_single_bar("quadratic").ElementStiffness(0).shape == (4, 4)
 
     def test_linear_element_is_symmetric(self):
         k = make_single_bar().ElementStiffness(0)
@@ -294,17 +294,6 @@ class TestAssembleGlobalStiffness:
         K = t.assemble_global_stiffness()
         assert np.linalg.matrix_rank(K) < K.shape[0]
 
-    @pytest.mark.parametrize("shape_func",shape_funcs)
-    def test_old_vs_new(self,shape_func):
-        t = PlaneTrussProblem([(0, 0), (1, 0), (1, 1), (0, 1)],
-                            [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)],
-                                1.0, 1.0,
-                                shape_func=shape_func)
-        k= t.assemble_global_stiffness()
-        k2= t.assemble_global_stiffness_old()
-        assert np.array_equal(k,k2)
-        assert np.linalg.matrix_rank(k) < k.shape[0]
-
     def test_right_triangle_matrix_shape_and_symmetry(self):
         t = make_right_triangle()
         K = t.assemble_global_stiffness()
@@ -320,21 +309,21 @@ class TestSetExternalConstraints:
     def test_one_free_dof_gives_1x1_matrix(self):
         t = make_single_bar()
         t.assemble_global_stiffness()
-        K_free = t.set_external_constraints([0, 1, 3])
+        K_free = t.set_external_constraints([0, 1, 3],2*t.num_nodes)
         assert K_free.shape == (1, 1)
 
     def test_two_free_dofs_gives_2x2_matrix(self):
         t = PlaneTrussProblem([(0, 0), (1, 0), (2, 0)], [(0, 1), (1, 2)], 1.0, 1.0)
         t.assemble_global_stiffness()
         # Constrain 4 out of 6 DOFs → 2 free
-        K_free = t.set_external_constraints([0, 1, 3, 5])
+        K_free = t.set_external_constraints([0, 1, 3, 5],2*t.num_nodes)
         assert K_free.shape == (2, 2)
 
     def test_right_triangle_constraints_give_3x3_matrix(self):
         t = make_right_triangle()
         t.assemble_global_stiffness()
         # 6 DOFs total. Constraining 3 DOFs (0, 1, 3) leaves 3 free DOFs.
-        K_free = t.set_external_constraints([0, 1, 3])
+        K_free = t.set_external_constraints([0, 1, 3],2*t.num_nodes)
         assert K_free.shape == (3, 3)
 
 # ─────────────────────────────────────────────────────────────
@@ -541,17 +530,17 @@ class TestGetElementForce:
 
 
 # ─────────────────────────────────────────────────────────────
-# add_inclined_support
+# set_inclined_support
 # ─────────────────────────────────────────────────────────────
 
-class TestAddInclinedSupport:
+class TestsetInclinedSupport:
 
     def test_empty_angle_dict_leaves_matrix_unchanged(self):
         """A 0° rotation is the identity transform → K must be unaffected."""
         t = make_single_bar()
         t.assemble_global_stiffness()
         K_before = t.k_global.copy()
-        t.add_inclined_support({})
+        t.set_inclined_support({})
         np.testing.assert_allclose(t.k_global, K_before, atol=1e-12)
 
     def test_zero_angle_leaves_matrix_unchanged(self):
@@ -559,27 +548,27 @@ class TestAddInclinedSupport:
         t = make_single_bar()
         t.assemble_global_stiffness()
         K_before = t.k_global.copy()
-        t.add_inclined_support({0: 0.0})
+        t.set_inclined_support({0: 0.0})
         np.testing.assert_allclose(t.k_global, K_before, atol=1e-12)
 
     def test_result_remains_symmetric(self):
         """Orthogonal similarity transforms preserve symmetry."""
         t = make_single_bar()
         t.assemble_global_stiffness()
-        t.add_inclined_support({0: 45.0})
+        t.set_inclined_support({0: 45.0})
         np.testing.assert_allclose(t.k_global, t.k_global.T, atol=1e-12)
 
     def test_negative_node_index_raises(self):
         t = make_single_bar()
         t.assemble_global_stiffness()
         with pytest.raises(ValueError, match="Node index out of range"):
-            t.add_inclined_support({-1: 30.0})
+            t.set_inclined_support({-1: 30.0})
 
     def test_out_of_bounds_node_index_raises(self):
         t = make_single_bar()
         t.assemble_global_stiffness()
         with pytest.raises(ValueError, match="Node index out of range"):
-            t.add_inclined_support({100: 30.0})
+            t.set_inclined_support({100: 30.0})
 
 # ─────────────────────────────────────────────────────────────
 # Test Stiffness Matrix Equivalence (Old vs New)
@@ -720,7 +709,7 @@ class TestInclinedSupportTransformations:
         k_original = t.k_global.copy()
         
         # Apply 90 degree support at node 0
-        t.add_inclined_support({0: 90.0})
+        t.set_inclined_support({0: 90.0})
         
         # Original k_xx for node 0 should now be at k_yy (DOF 1,1)
         assert t.k_global[1, 1] == pytest.approx(k_original[0, 0], abs=1e-10)

@@ -5,10 +5,23 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import yaml
+
 class PlaneTrussProblem:
     """Class for solving 2D plane truss problems."""
+
+# ___________________________________________________________________
+#
+#  CONSTANTS FUNCTIONS
+#
+# ___________________________________________________________________
     MESSAGE_NODE_IDX="Node index out of range."
     MESSAGE_ELEMENT_IDX="Element index out of range."
+# ___________________________________________________________________
+#
+#  INIT FUNCTIONS
+#
+# ___________________________________________________________________
+
     def __init__(self, nodes, elements, elasticity_modulus, cross_sectional_area, shape_func="linear"):
         """
         Initialize the plane truss problem.
@@ -77,21 +90,24 @@ class PlaneTrussProblem:
         for i, (n1, n2) in enumerate(self.elements):
             x1, y1 = self.nodes[n1]
             x2, y2 = self.nodes[n2]
-            print(x1, y1)
-            print(x2, y2)
             self.angles[i] = np.arctan2(y2 - y1, x2 - x1)
             
             if self.angles[i] < 0:
                 self.angles[i] += 2*np.pi
         
+        # Store original (structural) node count before mid-nodes are added
+        self.num_original_nodes = self.num_nodes
+
         #create middle points of elements for quadratic shape_func
         if self.shape_func != "linear":
             self.__add_mid_node()
 
         self.num_nodes = len(self.nodes)
 
-        # Initialize global stiffness matrix
-        self.k_global = np.zeros((2 * self.num_nodes, 2 * self.num_nodes))
+        # After static condensation the mid-nodes are eliminated from the global
+        # system, so k_global is sized on the original structural nodes only.
+        n_global = self.num_original_nodes
+        self.k_global = np.zeros((2 * n_global, 2 * n_global))
 
 
     @classmethod
@@ -137,79 +153,6 @@ class PlaneTrussProblem:
         
         truss.solve(F, constraints, inclined_support)
         return truss
-
-    def plot_plane_truss(self, show_node_indices=True, show_element_indices=True, show_deformed=False, scale_factor=1.0):
-        """
-        Function to plot the plane truss:
-        - Nodes are represented as circles and optionally labeled with their indices.
-        - Elements are represented as lines connecting the nodes and optionally labeled with their indices.
-
-        Parameters:
-        show_node_indices (bool): If True, display the node indices on the plot.
-        show_element_indices (bool): If True, display the element indices on the plot.
-        
-        """
-        plt.figure(figsize=(8, 6))
-        
-        # plot original structure
-        for i, e in enumerate(self.elements):
-            n1, n2 = e[0], e[-1]  # works for both 2 and 3 node elements
-            x1, y1 = self.nodes[n1]
-            x2, y2 = self.nodes[n2]
-            plt.plot([x1, x2], [y1, y2], 'b--', lw=1.5, label='Original' if i==0 else '')
-            if show_element_indices:
-                mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
-                plt.text(mid_x, mid_y, f"E{i}", color='blue', fontsize=12, ha='center', va='center',
-                         bbox={"facecolor":'white', "edgecolor":'blue', "boxstyle":'round,pad=0.3'})
-        
-        # plot deformed structure
-        if show_deformed and hasattr(self, 'displacements'):
-            deformed_nodes = self.nodes + self.displacements.reshape(-1, 2) * scale_factor
-            for i, e in enumerate(self.elements):
-                n1, n2 = e[0], e[-1]
-                x1, y1 = deformed_nodes[n1]
-                x2, y2 = deformed_nodes[n2]
-                plt.plot([x1, x2], [y1, y2], 'r-', lw=2, label='Deformed' if i==0 else '')
-        
-        plt.legend()
-        plt.title("Plane Truss Structure")
-        plt.xlabel("X Coordinate")
-        plt.ylabel("Y Coordinate")
-        plt.axis('equal')
-        plt.grid(True, alpha=0.5, linestyle='--', linewidth=0.5)
-        plt.show()
-        
-    def get_angle(self, element_index):
-        """
-        Get the angle of the element in degrees.
-
-        Parameters:
-        element_index (int): Index of the element.
-
-        Returns:
-        float: Angle of the element in degrees.
-        
-        """
-        if element_index < 0 or element_index >= self.num_elements:
-            raise ValueError(self.MESSAGE_ELEMENT_IDX)
-        
-        return np.rad2deg(self.angles[element_index])
-    
-    def get_length(self, element_index):
-        """
-        Get the length of the element.
-
-        Parameters:
-        element_index (int): Index of the element.
-
-        Returns:
-        float: Length of the element.
-        
-        """
-        if element_index < 0 or element_index >= self.num_elements:
-            raise ValueError(self.MESSAGE_ELEMENT_IDX)
-        
-        return self.L[element_index]
     
     #REMOVE before release
     def ElementStiffness_old(self, element_index):
@@ -229,19 +172,44 @@ class PlaneTrussProblem:
             raise ValueError(self.MESSAGE_ELEMENT_IDX)
         
         x = self.angles[element_index] #already radians
-        c = np.cos(x)
-        s = np.sin(x)
+        c, s = np.cos(x), np.sin(x)
+        #error correction because cos(1)!=0 in python, it gives a small number but it annoys me
+        if s>c:
+            a=np.sqrt(1-np.pow(s,2))
+            c=a if a<c else c
+        else:
+            a=np.sqrt(1-np.pow(c,2))
+            s=a if a<s else s
+
+
         L = self.L[element_index]
         if(len(self.elements[element_index])==3):
-            # FIX: Swap rows 2 and 3 with rows 4 and 5 to put the mid-node in the middle spatially
-            T = np.array([[c, s, 0, 0, 0, 0],
-                          [0, 0, 0, 0, c, s],   # Node 2 (end node) maps to local position 2
-                          [0, 0, c, s, 0, 0]])  # Node 3 (mid node) maps to local position 3
-            
-            k_local = (self.E[element_index] * self.A[element_index] / (3*L)) * np.array([[7, 1, -8],
-                                                                                        [1, 7, -8],
-                                                                                        [-8, -8, 16],])
-            k = np.transpose(T)@k_local@T
+            K_local = (self.E[element_index] * self.A[element_index] / (3*L)) * np.array([
+                                                                                        [ 7, -8,  1],
+                                                                                        [-8, 16, -8],
+                                                                                        [ 1, -8,  7]
+                                                                                    ])
+            # Static condensation: eliminate the internal mid-node (local index 1).
+            # Local node ordering is [n1(0), mid(1), n2(2)].
+            # Active (end) nodes: indices [0, 2]; internal (mid) node: index [1].
+            active = [0, 2]
+            internal = [1]
+
+            K_aa = K_local[np.ix_(active, active)]      # 2x2: end nodes
+            K_ai = K_local[np.ix_(active, internal)]    # 2x1: end -> mid
+            K_ia = K_local[np.ix_(internal, active)]    # 1x2: mid -> end
+            K_ii = K_local[np.ix_(internal, internal)]  # 1x1: mid -> mid
+
+            # Condensed local stiffness (2x2): K_cond = K_aa - K_ai * K_ii^{-1} * K_ia
+            K_ii_inv = np.linalg.inv(K_ii)
+            K_local = K_aa - K_ai @ K_ii_inv @ K_ia
+
+            # Build a 2-node transformation matrix for the two end nodes only
+            T = np.zeros((2, 4))
+            T[0, 0] = c;  T[0, 1] = s   # end node 0
+            T[1, 2] = c;  T[1, 3] = s   # end node 1
+
+            return T.T @ K_local @ T
         else:
             k = (self.E[element_index] * self.A[element_index] / L) * np.array([[c**2, c*s, -c**2, -c*s],
                                        [c*s, s**2, -c*s, -s**2],
@@ -255,7 +223,6 @@ class PlaneTrussProblem:
         
         L = self.L[element_index]
         theta = self.angles[element_index]
-        print(self.get_angle(element_index))
         c, s = np.cos(theta), np.sin(theta)
         #error correction because cos(1)!=0 in python, it gives a small number but it annoys me
         if s>c:
@@ -265,14 +232,7 @@ class PlaneTrussProblem:
             a=np.sqrt(1-np.pow(c,2))
             s=a if a<s else s
 
-        print(self.angles[element_index] ,theta, c,s)
         n_nodes = len(self.elements[element_index])
-        
-        # transformation matrix (projects global DOFs to local axial)
-        T = np.zeros((n_nodes, 2 * n_nodes))
-        for i in range(n_nodes):
-            T[i, 2*i]   = c
-            T[i, 2*i+1] = s
         
         # Gauss quadrature points and weights
         # 2 points exact for linear, 3 points for quadratic
@@ -289,12 +249,30 @@ class PlaneTrussProblem:
         for xi, w in zip(points, weights):
             B = B_func(xi, L)                        # (n_nodes,)
             K_local += w * np.outer(B, B) * (L/2)
-        K_local *= self.E[element_index] * self.A[element_index]
-        print(K_local)
-        print(T)
-        print(T.T @ K_local @ T)
-        # transform to global frame: Tᵀ K_local T
+        K_local *= self.E[element_index] * self.A[element_index] 
+
+        if self.shape_func == "quadratic":
+            # Static condensation: eliminate the internal mid-node (local index 1).
+            # Local node ordering is [n1(0), mid(1), n2(2)].
+            # Active (end) nodes: indices [0, 2]; internal (mid) node: index [1].
+            active = [0, 2]
+            internal = [1]
+
+            K_aa = K_local[np.ix_(active, active)]      # 2x2: end nodes
+            K_ai = K_local[np.ix_(active, internal)]    # 2x1: end -> mid
+            K_ia = K_local[np.ix_(internal, active)]    # 1x2: mid -> end
+            K_ii = K_local[np.ix_(internal, internal)]  # 1x1: mid -> mid
+
+            # Condensed local stiffness (2x2): K_cond = K_aa - K_ai * K_ii^{-1} * K_ia
+            K_ii_inv = np.linalg.inv(K_ii)
+            K_local = K_aa - K_ai @ K_ii_inv @ K_ia
+
+            # Build a 2-node transformation matrix for the two end nodes only
+        T = np.zeros((2, 4))
+        T[0, 0] = c;  T[0, 1] = s   # end node 0
+        T[1, 2] = c;  T[1, 3] = s   # end node 1
         return T.T @ K_local @ T
+
     
     def assemble_global_stiffness(self):
         """
@@ -305,11 +283,15 @@ class PlaneTrussProblem:
         
         """
         for i, e in enumerate(self.elements):
-            k_local = self.ElementStiffness(i)
+            k_elem = self.ElementStiffness(i)
+            if self.shape_func == "quadratic":
+                # After static condensation k_elem is 4x4 (end nodes only).
+                # e = [n1, mid, n2]; end nodes are e[0] and e[-1].
+                e= np.delete(e,1)
             dof_indices = [dof for n in e for dof in (2*n, 2*n+1)]
             for a, da in enumerate(dof_indices):
                 for b, db in enumerate(dof_indices):
-                    self.k_global[da, db] += k_local[a, b]
+                    self.k_global[da, db] += k_elem[a, b]
         return self.k_global
     
     #REMOVE before release
@@ -329,41 +311,6 @@ class PlaneTrussProblem:
                     self.k_global[da, db] += k_local[a, b]
         return self.k_global
     
-    def add_inclined_support(self, node_and_angles:dict):
-        """
-        Add an inclined support to the truss at a specific node.
-
-        Parameters:
-        node_and_angles(dict {int:float}) = a dict of shape {node_number: angle_to_set}
-        
-        """
-        for node_index in node_and_angles: 
-            print(node_and_angles, node_index)
-            angle = node_and_angles[node_index]
-            if node_index < 0 or node_index >= self.num_nodes:
-                raise ValueError(self.MESSAGE_NODE_IDX)
-            
-            transformation_matrix = np.eye(2 * self.num_nodes)
-            x = np.deg2rad(angle)  # Convert angle to radians
-            transformation_matrix[2*node_index, 2*node_index] = np.cos(x)
-            transformation_matrix[2*node_index, 2*node_index + 1] = np.sin(x)
-            transformation_matrix[2*node_index + 1, 2*node_index] = -np.sin(x)
-            transformation_matrix[2*node_index + 1, 2*node_index + 1] = np.cos(x)
-            self.k_global = transformation_matrix @ self.k_global @ (transformation_matrix.T)
-    
-    def set_external_constraints(self, constrained_dofs):
-        """
-        Partition the global stiffness matrix by eliminating the rows and columns corresponding to the constrained degrees of freedom.
-
-        Parameters:
-        constrained_dofs (list of int): List of constrained degrees of freedom.
-
-        Returns:
-        np.ndarray: Partitioned global stiffness matrix.
-        
-        """
-        free_dofs = np.setdiff1d(np.arange(2 * self.num_nodes), constrained_dofs)
-        return self.k_global[np.ix_(free_dofs, free_dofs)]
     
     def solve(self, external_forces, constrained_dofs, inclined_support={}):
         """
@@ -396,47 +343,73 @@ class PlaneTrussProblem:
         #             constrained_dofs.append(transverse_dof)
         
         if inclined_support != ():
-            self.add_inclined_support(inclined_support)
-        total_dofs = 2 * self.num_nodes
-        free_dof_indices = np.setdiff1d(np.arange(total_dofs), constrained_dofs)
-        
-        # 1. Standardize external_forces into a full global vector
-        if isinstance(external_forces, dict):
-            f_global = np.zeros(total_dofs)
-            for dof, val in external_forces.items():
-                f_global[dof] = val
-            external_forces = f_global
-        else:
-            external_forces = np.asarray(external_forces)
-            # Backward-compatibility fallback: if input matches number of free DOFs
-            if external_forces.ndim == 1 and external_forces.shape[0] == len(free_dof_indices):
-                f_global = np.zeros(total_dofs)
-                f_global[free_dof_indices] = external_forces
-                external_forces = f_global
-            elif external_forces.shape[0] != total_dofs:
-                raise ValueError(f"external_forces length ({external_forces.shape[0]}) must match "
-                                 f"total DOFs ({total_dofs}) or free DOFs ({len(free_dof_indices)}).")
+            self.set_inclined_support(inclined_support)
+        # After static condensation the global system only contains original nodes.
+        n_reduced_global = self.num_original_nodes
+        total_dofs_reduced = 2 * n_reduced_global
 
-        print("shape of external forces: ", len(external_forces), "  shape of stiffness matrix: ", np.shape(self.k_global))
-        # 2. Partition BOTH the global stiffness matrix and the force vector
-        k_free = self.k_global[np.ix_(free_dof_indices, free_dof_indices)]
-        f_free = external_forces[free_dof_indices]
+        # 1. Partition BOTH the global stiffness matrix and the force vector
+        k_free, f_free, free_dof_indices=self.set_external_constraints_and_forces(constrained_dofs,external_forces,total_dofs_reduced)
         
-        print(k_free)
-        # 3. Solve for displacements at unconstrained DOFs
+        # 2. Solve for displacements at unconstrained DOFs
         free_displacements = np.linalg.solve(k_free, f_free)
         
-        # 4. Reconstruct the full global displacements vector
-        displacements = np.zeros(total_dofs)
+        # 3. Reconstruct the full global displacements vector, Back-substitution to get the mid node back
+        displacements=np.zeros(2*self.num_nodes)
         displacements[free_dof_indices] = free_displacements
-        
-        
+        self.displacements_matrix=displacements.reshape(-1, 2)
+        if self.shape_func == "quadratic":
+            for element_index in range(self.num_elements):
+                nodes = self.elements[element_index] 
+                n1, mid, n2 = nodes[0], nodes[1], nodes[-1] 
+                L = self.L[element_index]
+                theta = self.angles[element_index]
+                c, s = np.cos(theta), np.sin(theta)
+                direction = np.array([c, s])
+
+                # End-node global displacements (2D each)
+                d_end = self.displacements_matrix[[n1, n2]]   # shape (2,2)
+                # Project to local axial: u_a = [u_n1_axial, u_n2_axial]
+                u_a = d_end @ direction 
+
+                B_func = self.strain_dispacement_array[3]
+                n_gauss = 2
+                pts, wts = np.polynomial.legendre.leggauss(n_gauss)
+                K_local = np.zeros((3, 3))
+                for xi, w in zip(pts, wts):
+                    B = B_func(xi, L)
+                    K_local += w * np.outer(B, B) * (L / 2)
+                K_local *= self.E[element_index] * self.A[element_index]
+
+                active   = [0, 2]
+                internal = [1]
+                K_ai = K_local[np.ix_(active, internal)]
+                K_ii = K_local[np.ix_(internal, internal)]
+                # Back-substitute: u_mid_local = -K_ii^{-1} K_ia u_a
+                u_mid_local = (-np.linalg.inv(K_ii) @ K_ai.T @ u_a)[0]
+                # 1. Define the normal (transverse) direction
+                normal = np.array([-s, c])
+                # 2. Get local transverse displacements of the end nodes
+                v_a = d_end @ normal 
+                # 3. Mid-node transverse displacement is the average of the ends (kinematic straight bar)
+                v_mid_local = (v_a[0] + v_a[-1]) / 2.0  
+                # 4. Reconstruct global displacement using BOTH axial and transverse
+                d_mid = (u_mid_local * direction) + (v_mid_local * normal) 
+                displacements[2*mid]=d_mid[0]
+                displacements[2*mid+1]=d_mid[1]
+                print(d_mid)
         self.displacements = displacements
         # Save as an Nx2 matrix for easy node-by-node extraction elsewhere
         self.displacements_matrix = displacements.reshape(-1, 2) 
-        #print(self.get_reaction_forces())
         return displacements
     
+# ___________________________________________________________________
+#
+#   GET FUNCTIONS
+#
+# ___________________________________________________________________
+
+
     def get_displacement(self, node_index):
         """
         Get the displacement of a specific node.
@@ -453,6 +426,7 @@ class PlaneTrussProblem:
         
         return self.displacements[2*node_index], self.displacements[2*node_index + 1]
     
+
     def get_displacement_on_element(self, element_index, x):
         """
         choose an element, get the displacement at that point x on the element going from node 0 to node 1 of the element.
@@ -484,7 +458,7 @@ class PlaneTrussProblem:
         np.ndarray: Reaction forces.
         
         """
-        reaction_forces = self.k_global @ self.displacements
+        reaction_forces = self.k_global @ self.displacements[:2*self.num_original_nodes]
         self.reaction_forces = reaction_forces
         return reaction_forces
     
@@ -534,6 +508,101 @@ class PlaneTrussProblem:
         force = stress * self.A[element_index]
         return force
     
+    def get_angle(self, element_index):
+        """
+        Get the angle of the element in degrees.
+
+        Parameters:
+        element_index (int): Index of the element.
+
+        Returns:
+        float: Angle of the element in degrees.
+        
+        """
+        if element_index < 0 or element_index >= self.num_elements:
+            raise ValueError(self.MESSAGE_ELEMENT_IDX)
+        
+        return np.rad2deg(self.angles[element_index])
+    
+    def get_length(self, element_index):
+        """
+        Get the length of the element.
+
+        Parameters:
+        element_index (int): Index of the element.
+
+        Returns:
+        float: Length of the element.
+        
+        """
+        if element_index < 0 or element_index >= self.num_elements:
+            raise ValueError(self.MESSAGE_ELEMENT_IDX)
+        
+        return self.L[element_index]
+
+# ___________________________________________________________________
+# 
+#   SET FUNCTIONS
+# 
+# ___________________________________________________________________    
+
+    def set_inclined_support(self, node_and_angles:dict):
+        """
+        Add an inclined support to the truss at a specific node.
+
+        Parameters:
+        node_and_angles(dict {int:float}) = a dict of shape {node_number: angle_to_set}
+        
+        """
+        for node_index in node_and_angles: 
+            if node_index < 0 or node_index >= self.num_original_nodes:
+                raise ValueError(self.MESSAGE_NODE_IDX)
+            angle = node_and_angles[node_index]
+            
+            transformation_matrix = np.eye(2 * self.num_original_nodes)
+            x = np.deg2rad(angle)  # Convert angle to radians)
+            transformation_matrix[2*node_index, 2*node_index] = np.cos(x)
+            transformation_matrix[2*node_index, 2*node_index + 1] = np.sin(x)
+            transformation_matrix[2*node_index + 1, 2*node_index] = -np.sin(x)
+            transformation_matrix[2*node_index + 1, 2*node_index + 1] = np.cos(x)
+            self.k_global = transformation_matrix @ self.k_global @ (transformation_matrix.T)
+    
+    def set_external_constraints(self, constrained_dofs,n_constraints):
+        """
+        Partition the global stiffness matrix by eliminating the rows and columns corresponding to the constrained degrees of freedom.
+
+        Parameters:
+        constrained_dofs (list of int): List of constrained degrees of freedom.
+
+        Returns:
+        np.ndarray: Partitioned global stiffness matrix.
+        
+        """
+        free_dofs = np.setdiff1d(np.arange(n_constraints), constrained_dofs)
+        return self.k_global[np.ix_(free_dofs, free_dofs)]
+    
+    def set_external_constraints_and_forces(self, constrained_dofs,external_forces, n_constraints):
+        """
+        Partition the global stiffness matrix by eliminating the rows and columns corresponding to the constrained degrees of freedom.
+
+        Parameters:
+        constrained_dofs (list of int): List of constrained degrees of freedom.
+
+        Returns:
+        np.ndarray: Partitioned global stiffness matrix.
+        
+        """
+        free_dof_indices = np.setdiff1d(np.arange(n_constraints), constrained_dofs)
+        # 1. Standardize external_forces into a full global vector
+        external_forces=self.__reshape_force_vector(external_forces,n_constraints, free_dof_indices)
+        f_free = external_forces[free_dof_indices]
+        return self.k_global[np.ix_(free_dof_indices, free_dof_indices)], f_free, free_dof_indices
+
+# ___________________________________________________________________
+#
+#   HELPER FUNCTIONS
+#
+# ___________________________________________________________________
 
     def __into_array_if_not(self,E) -> np.ndarray:
         if isinstance(E,(str, float, int)):
@@ -594,3 +663,73 @@ class PlaneTrussProblem:
                         applied_forces[i*2+1]=n["force"][1]
         #TODO maybe transform nodes from just a pair of coordinates to an object to also add personalized ids
         return nodes, constraints, inclined_support, applied_forces
+    
+    def __reshape_force_vector(self,external_forces, total_dofs, free_dof_indices)-> np.ndarray:
+        if isinstance(external_forces, dict):
+            f_global = np.zeros(total_dofs)
+            for dof, val in external_forces.items():
+                f_global[dof] = val
+            external_forces = f_global
+        else:
+            external_forces = np.asarray(external_forces)
+            # Backward-compatibility fallback: if input matches number of free DOFs
+            if external_forces.ndim == 1 and external_forces.shape[0] == len(free_dof_indices):
+                f_global = np.zeros(total_dofs)
+                f_global[free_dof_indices] = external_forces
+                external_forces = f_global
+            elif external_forces.shape[0]!=self.num_nodes*2:
+                raise ValueError(f"external_forces length ({external_forces.shape[0]}) must match "
+                                 f"total DOFs ({total_dofs}) or free DOFs ({len(free_dof_indices)}).")
+        return external_forces
+    
+# ___________________________________________________________________
+#
+#   PLOT FUNCTIONS
+#
+# ___________________________________________________________________
+
+    def plot_plane_truss(self, show_node_indices=True, show_element_indices=True, show_deformed=False, scale_factor=1.0):
+        """
+        Function to plot the plane truss:
+        - Nodes are represented as circles and optionally labeled with their indices.
+        - Elements are represented as lines connecting the nodes and optionally labeled with their indices.
+
+        Parameters:
+        show_node_indices (bool): If True, display the node indices on the plot.
+        show_element_indices (bool): If True, display the element indices on the plot.
+        
+        """
+        plt.figure(figsize=(8, 6))
+        
+        # plot original structure
+        for i, e in enumerate(self.elements):
+            n1, n2 = e[0], e[-1]  # works for both 2 and 3 node elements
+            x1, y1 = self.nodes[n1]
+            x2, y2 = self.nodes[n2]
+            plt.plot([x1, x2], [y1, y2], 'b--', lw=1.5, label='Original' if i==0 else '')
+            if show_element_indices:
+                mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
+                plt.text(mid_x, mid_y, f"E{i}", color='blue', fontsize=12, ha='center', va='center',
+                         bbox={"facecolor":'white', "edgecolor":'blue', "boxstyle":'round,pad=0.3'})
+        
+        # plot deformed structure
+        list_x=[]
+        list_y=[]
+        if show_deformed and hasattr(self, 'displacements'):
+            deformed_nodes = self.nodes + self.displacements_matrix * scale_factor
+            print("nodi: ",self.nodes)
+            print("disp mat: ", self.displacements_matrix)
+            for i, e in enumerate(self.elements):
+                for n in e:
+                    list_x.append(deformed_nodes[n][0])
+                    list_y.append(deformed_nodes[n][1])
+                    
+            plt.plot(list_x,list_y, 'r-', lw=2, label='Deformed')
+        
+        plt.legend()
+        plt.title("Plane Truss Structure")
+        plt.xlabel("X Coordinate")
+        plt.ylabel("Y Coordinate")
+        plt.axis('equal')
+        plt.grid(True, alpha=0.5, linestyle='--', linewidth=0.5)
+        plt.show()
