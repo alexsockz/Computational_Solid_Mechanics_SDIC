@@ -1,0 +1,20 @@
+defaults:
+  E: 210e9
+  A: 0.01
+  shape_func: quadratic
+
+nodes:
+  - id: 0
+    x: 0.0
+    y: 0.0
+    constraints: [ux,uy]
+
+  - id: 1
+    x: 1.0
+    y: 0.0
+    constraints: [ux,uy]
+
+elements:
+  - id: 0
+    nodes: [0, 1]
+    force: [900000,0]

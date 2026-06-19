@@ -87,7 +87,7 @@ def solved_right_triangle(shape_func="linear"):
     """
     truss = make_right_triangle(shape_func)
     truss.assemble_global_stiffness()
-    truss.solve({4: 100.0, 5: -50.0}, constrained_dofs=[0, 1, 3])
+    truss.solve({4: 100.0, 5: 50.0}, constrained_dofs=[0, 1, 3])
     return truss
 
 # ─────────────────────────────────────────────────────────────
@@ -654,7 +654,6 @@ class TestParameterized2DTrusses:
         t.assemble_global_stiffness()
 
         # Build external force vector from the dictionary
-        # CRITICAL FIX: Use t.num_nodes to account for the appended mid-nodes in quadratic elements
         F = np.zeros(2 * t.num_nodes)
         for dof, val in external_forces_dict.items():
             F[dof] = val
@@ -715,3 +714,121 @@ class TestInclinedSupportTransformations:
         assert t.k_global[1, 1] == pytest.approx(k_original[0, 0], abs=1e-10)
         # Original k_yy for node 0 should now be at k_xx (DOF 0,0)
         assert t.k_global[0, 0] == pytest.approx(k_original[1, 1], abs=1e-10)
+
+
+class TestTensionElements():
+    def test_tension_element_elongates(self):
+        """A bar under tension must have a longer deformed length than its original length."""
+        t = PlaneTrussProblem(
+            nodes=[(0.0, 0.0), (1.0, 0.0)],
+            elements=[(0, 1)],
+            elasticity_modulus=1.0,
+            cross_sectional_area=1.0,
+            shape_func="linear",
+        )
+        t.assemble_global_stiffness()
+        t.solve({2: 100.0}, constrained_dofs=[0, 1, 3])  # positive = tension
+
+        x0_def = t.nodes[0][0] + t.displacements[0]
+        x1_def = t.nodes[1][0] + t.displacements[2]
+        deformed_length = abs(x1_def - x0_def)
+        original_length = 1.0
+
+        assert deformed_length > original_length
+        assert t.get_element_stress(0) > 0   # positive = tension
+
+    @pytest.mark.parametrize("shape_func",shape_funcs)
+    @pytest.mark.parametrize("name, nodes, elements, constrained_dofs, external_forces_dict", [
+        (
+            "Right_Triangle_Pin_Roller",
+            [(0, 0), (1, 0), (0, 1)],
+            [(0, 1), (1, 2), (0, 2)],
+            [0, 1, 3],  # Node 0 pinned (X,Y), Node 1 roller (Y-fixed)
+            {4: 100.0, 5: -50.0}  # Node 2 loaded in X (DOF 4) and Y (DOF 5)
+        ),
+        (
+            "Square_Cross_Braced_Cantilever",
+            [(0, 0), (1, 0), (1, 1), (0, 1)],
+            [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)],
+            [0, 1, 6, 7],  # Nodes 0 and 3 pinned to a wall
+            {3: -200.0, 5: -200.0}  # Downward loads on free nodes 1 and 2 (Y DOFs 3 and 5)
+        ),
+        (
+            "Three_Triangle_Bridge",
+            [(0, 0), (1, 0), (2, 0), (0.5, 1), (1.5, 1)],
+            [(0, 1), (1, 2), (0, 3), (1, 3), (1, 4), (2, 4), (3, 4)],
+            [0, 1, 5],  # Node 0 pinned, Node 2 roller (Y-fixed)
+            {3: -500.0}  # Downward load at Node 1 (Y DOF 3)
+        ),
+        (
+            "Symmetric_Roof_Truss",
+            [(0, 0), (2, 0), (4, 0), (1, 1.5), (3, 1.5)],
+            [(0, 1), (1, 2), (0, 3), (3, 1), (1, 4), (4, 2), (3, 4)],
+            [0, 1, 5],  # Pinned at left (Node 0), Roller at right (Node 2)
+            {7: -150.0, 9: -150.0} # Symmetrical downward loads on roof peaks (Nodes 3 and 4)
+        )
+    ])
+    def test_parametrized_tension_congruency(self, shape_func, name, nodes, elements, constrained_dofs, external_forces_dict):
+        E, A = 210e9, 0.01  
+        
+        # Initialize with the parameterized shape function
+        t = PlaneTrussProblem(nodes, elements, E, A, shape_func=shape_func)
+        t.assemble_global_stiffness()
+
+        t.solve(external_forces_dict, constrained_dofs)  # positive = tension
+        print(t.displacements_matrix)
+        for i,e in enumerate(t.elements):
+            node0=t.nodes[e[0]]
+            node1=t.nodes[e[-1]]
+            
+            node0_def=node0+np.array([t.displacements[e[0]*2],t.displacements[2*e[0]+1]])
+            node1_def=node1+np.array([t.displacements[e[-1]*2],t.displacements[2*e[-1]+1]])
+
+            deformed_length = np.sqrt(np.pow(node1_def[0]-node0_def[0],2)+ np.pow(node1_def[1]-node0_def[1],2))
+            length = t.get_length(i)
+            print(node1_def,node1)
+            print(deformed_length,length)
+            stress_in_middle=t.get_element_stress(i)
+            print(stress_in_middle)
+
+            tol = 1e-6  # relative to element length
+            delta_length = deformed_length - length
+            rel_delta = abs(delta_length) / length
+
+            # Skip the sign check if both values are negligibly small
+            if abs(stress_in_middle) < 1.0 and rel_delta < tol:
+                continue  # element is essentially unstressed, no sign to check
+
+            assert np.sign(stress_in_middle) == np.sign(delta_length), \
+                f"[{name} - {shape_func}] stress at midpoint: {stress_in_middle}, " \
+                f"length after: {deformed_length}, length before: {length}"
+    
+    @pytest.mark.parametrize("files", ["structure.yaml","bridge.yaml"]) 
+    def test_from_files(self,files):
+        t=PlaneTrussProblem.load_file(files)
+        print(t.displacements_matrix)
+        for i,e in enumerate(t.elements):
+            node0=t.nodes[e[0]]
+            node1=t.nodes[e[-1]]
+            
+            node0_def=node0+np.array([t.displacements[e[0]*2],t.displacements[2*e[0]+1]])
+            node1_def=node1+np.array([t.displacements[e[-1]*2],t.displacements[2*e[-1]+1]])
+
+            deformed_length = np.sqrt(np.pow(node1_def[0]-node0_def[0],2)+ np.pow(node1_def[1]-node0_def[1],2))
+            length = t.get_length(i)
+            print(node1_def,node1)
+            print(deformed_length,length)
+            stress_in_middle=t.get_element_stress(i)
+            print(stress_in_middle)
+
+            tol = 1e-6  # relative to element length
+            delta_length = deformed_length - length
+            rel_delta = abs(delta_length) / length
+
+            # Skip the sign check if both values are negligibly small
+            if abs(stress_in_middle) < 1.0 and rel_delta < tol:
+                continue  # element is essentially unstressed, no sign to check
+
+            assert np.sign(stress_in_middle) == np.sign(delta_length), \
+                f"[{name} - {shape_func}] stress at midpoint: {stress_in_middle}, " \
+                f"length after: {deformed_length}, length before: {length}"
