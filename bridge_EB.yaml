@@ -1,0 +1,79 @@
+# global defaults, overridable per element
+defaults:
+  E: 210e9
+  A: 0.01
+  I: 8.33e-6
+
+nodes:
+  - id: 0
+    x: 0.0
+    y: 0.0
+    constraints: [ux,uy]
+
+  - id: 1
+    x: 1.0
+    y: 0.0
+
+  - id: 2
+    x: 2.0
+    y: 0.0
+
+  - id: 3
+    x: 3.0
+    y: 0.0
+    constraints: [ux,uy] 
+
+  - id: 4
+    x: 0.5
+    y: 0.7
+
+  - id: 5
+    x: 1.5
+    y: 0.8
+    force: [0,-100000,0]
+  
+  - id: 6
+    x: 2.5
+    y: 0.7
+
+elements:
+  - id: 0
+    nodes: [0, 1]
+    force: [0,-50000,0]
+    # uses global E and A
+
+  - id: 1
+    nodes: [1, 2]
+    force: [0,-50000,0]
+    # E: 70e9                    # override: aluminum
+    # A: 0.005                   # override: thinner
+
+  - id: 2
+    nodes: [2, 3]
+    force: [0,-50000,0]
+
+  - id: 3
+    nodes: [0, 4]
+
+  - id: 4
+    nodes: [4, 1]
+
+  - id: 5
+    nodes: [5, 1]
+    #force: [0,-90000,0]
+
+  - id: 6
+    nodes: [2, 5]
+    #force: [0,-90000,0]
+
+  - id: 7
+    nodes: [2, 6]
+
+  - id: 8
+    nodes: [6, 3]
+
+  - id: 9
+    nodes: [4, 5]
+
+  - id: 10
+    nodes: [5, 6]

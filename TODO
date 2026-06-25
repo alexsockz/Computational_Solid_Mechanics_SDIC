@@ -1,19 +1,6 @@
-add different types of constraints from the complete one
+plot da aggiungere forse:
+von mises stress:
+    per fare questo è necessario avere una definizione della geometria dell'elemento in quanto si guarda i punti piu estremi dell'elemento
 
 
-
-
-getrundata("run")
-
-json, 
-
-
-getrundatatimestamp("","")
-
-
-DA DIRE AL PROF:
-
-per tenere in considerazione la componente perpendicolare all'elemento basta sommare alla global stiffness matrix dell'elemento un ulteriore stiffness matrix ma moltpiplicata per una translation (CS) matrix ortogonale?
-
-aggiungere la forza distribuita perchè si simula la forza peso dell'elemento stesso, ma deve essere inserita ad un angolo? no non mi pare perchè portiamo la matrice di stiffness a globale
-
+aggiungi ID di ogni elemento in e poi usa il nome nel plot e aggiungi la possibilità di richiamare l'elemento in base al nome

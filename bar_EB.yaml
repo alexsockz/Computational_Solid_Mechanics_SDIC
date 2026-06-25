@@ -1,0 +1,19 @@
+defaults:
+  E: 1
+  A: 1
+  I: 1
+nodes:
+  - id: 0
+    x: 0.0
+    y: 0.0
+    constraints: [ux,uy,theta]
+
+  - id: 1
+    x: 1.0
+    y: 0.0
+    force: [0,1,0]
+    constraints: [ux,theta]
+
+elements:
+  - id: 0
+    nodes: [0, 1]
