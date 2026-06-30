@@ -19,41 +19,62 @@ class PlaneEBBeamProblem:
     MESSAGE_NODE_IDX="Node index out of range."
     MESSAGE_ELEMENT_IDX="Element index out of range."
 
-
-    shape_functions_array_bar = {
-            2: lambda x,l: np.array([(1-x)/2, (x+1)/2])
-            #3: lambda x: np.array([0.5*x*(x-1), (1-x**2), 0.5*x*(x+1)])
+    shape_functions_matrix = {
+        2:{
+            2: lambda x, l: np.array([
+                [(1-x)/2,       0,   (x+1)/2,       0],  # u(x) interpolation
+                [      0, (1-x)/2,         0, (x+1)/2]   # v(x) interpolation
+            ]),
+            3: lambda x, l: np.array([
+                [0.5*x*(x-1),            0,   (1-x**2),            0,   0.5*x*(x+1),            0],
+                [          0, 0.5*x*(x-1),           0,   (1-x**2),             0, 0.5*x*(x+1)]
+            ])
+        },
+        3:
+            {2: lambda x, l: np.array([
+            [(1-x)/2, 0, 0, (x+1)/2, 0, 0],
+            [0,0.25 * (2.0 - 3.0 * x + np.power(x, 3)),                      # v_1(l / 8.0) * (1.0 - x - np.power(x, 2) + np.power(x, 3)),      # \phi_10,0.25 * (2.0 + 3.0 * x - np.power(x, 3)),                      # v_2(l / 8.0) * (-1.0 - x + np.power(x, 2) + np.power(x, 3))      # \phi_2
+            ]]),
         }
-
-    strain_dispacement_array_bar = {
-            2: lambda x,l: (2/l)* np.array([-0.5,0.5])
-            #3: lambda x,l: (2/l)* np.array([x-0.5,-2*x,x+0.5])
+    }
+    #NOTE derived by hand, maybe there is a way to derive via python
+    strain_dispacement_matrix = {
+        2:{
+            2: lambda x, l: (2/l) * np.array([[
+                -0.5,  0.0,   0.5,  0.0
+            ]]),
+            3: lambda x, l: (2/l) * np.array([[
+                x - 0.5,  0.0,   -2*x,  0.0,   x + 0.5,  0.0
+            ]])
+        },
+        3:{ 
+            2: lambda x, l: np.array(
+            [[
+                (2/l)* (-0.5),
+                0,
+                0,
+                (2/l)* 0.5,
+                0,
+                0
+            ],
+            [
+                0,
+                (6.0 * x) / np.power(l, 2),                                  # v_1 derivative
+                (3.0 * x - 1.0) / l,
+                0,                                   # \phi_1 derivative
+                (-6.0 * x) / np.power(l, 2),                                 # v_2 derivative
+                (3.0 * x + 1.0) / l                                          # \phi_2 derivative
+            ]]),
         }
-    
-    shape_functions_array_beam = {
-        2: lambda x, l: np.array([
-            0.25 * (2.0 - 3.0 * x + np.power(x, 3)),                      # v_1
-            (l / 8.0) * (1.0 - x - np.power(x, 2) + np.power(x, 3)),      # \phi_1
-            0.25 * (2.0 + 3.0 * x - np.power(x, 3)),                      # v_2
-            (l / 8.0) * (-1.0 - x + np.power(x, 2) + np.power(x, 3))      # \phi_2
-        ]),
     }
-
-    strain_dispacement_array_beam = {
-        2: lambda x, l: np.array([
-            (6.0 * x) / np.power(l, 2),                                  # v_1 derivative
-            (3.0 * x - 1.0) / l,                                         # \phi_1 derivative
-            (-6.0 * x) / np.power(l, 2),                                 # v_2 derivative
-            (3.0 * x + 1.0) / l                                          # \phi_2 derivative
-        ]),
-    }
+    element_type = 3
 # ___________________________________________________________________
 #
 #  INIT FUNCTIONS
 #
 # ___________________________________________________________________
 
-    def __init__(self, nodes, elements, elasticity_modulus, cross_sectional_area, bending_modulus):
+    def __init__(self, nodes, elements, elasticity_modulus, cross_sectional_area, bending_modulus=None):
         """
         Initialize the plane truss problem.
 
@@ -78,7 +99,8 @@ class PlaneEBBeamProblem:
 
         self.E = self.__into_array_if_not(elasticity_modulus)            
         self.A = self.__into_array_if_not(cross_sectional_area)
-        self.I = self.__into_array_if_not(bending_modulus)
+        if bending_modulus is not None:
+            self.I = self.__into_array_if_not(bending_modulus)
         
         # Perform initial checks
         if self.num_nodes < 2:
@@ -95,21 +117,22 @@ class PlaneEBBeamProblem:
     
         # Compute the plane truss elements' lengths
         #length and angle don't change by adding nodes in the middle so i just compute them now
+
+        #make rotation matrices
+        self.R = np.empty(self.num_elements, dtype=np.ndarray)
+        self.T = np.empty(self.num_elements, dtype=np.ndarray)
         self.L = np.zeros(self.num_elements)
-        for i, (n1, n2) in enumerate(self.elements):
-            x1, y1 = self.nodes[n1]
-            x2, y2 = self.nodes[n2]
-            self.L[i] = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-            
-        # Compute the angles of the elements in degrees
         self.angles = np.zeros(self.num_elements)
         for i, (n1, n2) in enumerate(self.elements):
             x1, y1 = self.nodes[n1]
             x2, y2 = self.nodes[n2]
+            self.L[i] = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+            # Compute the angles of the elements in rad
             self.angles[i] = np.arctan2(y2 - y1, x2 - x1)
-            
             if self.angles[i] < 0:
                 self.angles[i] += 2*np.pi
+
+            self.R[i], self.T[i]=self.get_translation_matrix(i)
         
         # Store original (structural) node count before mid-nodes are added
         self.num_original_nodes = self.num_nodes
@@ -120,7 +143,7 @@ class PlaneEBBeamProblem:
         # After static condensation the mid-nodes are eliminated from the global
         # system, so k_global is sized on the original structural nodes only.
         n_global = self.num_original_nodes
-        self.k_global = np.zeros((3 * n_global, 3 * n_global))
+        self.k_global = np.zeros((self.element_type * n_global, self.element_type * n_global))
 
 
     @classmethod
@@ -141,12 +164,14 @@ class PlaneEBBeamProblem:
         #globals: elastic modulus and cross sectional area should be a list, since i prepare it here
         elastic_mod = np.full(n_elem,structure["defaults"]["E"])
         cross_sec = np.full(n_elem,structure["defaults"]["A"])
+        # if self.element_type == 3: fix this, get the info from the file
         bending_mod = np.full(n_elem,structure["defaults"]["I"]) # only if plane
+        #else: bending_mod = None
         if "forces" in structure["defaults"]:
-            #TODO might be wrong, might create a 2d matrix instead of an array
-            F_elements=np.full(3*n_elem,structure["defaults"]["forces"])
+            #must be 2 anyways because an element, by how N is defined, canno't have angular momentum only, it must be calculated by q_y on the 2 nodes
+            F_elements=np.full(2*n_elem,structure["defaults"]["forces"])
         else:
-            F_elements=np.zeros(3*n_elem)
+            F_elements=np.zeros(2*n_elem)
         #force and type of struct tbd
         
         #formatting the nodes
@@ -157,7 +182,7 @@ class PlaneEBBeamProblem:
  
         for i,e in enumerate(structure["elements"]):
         # already formatted as lists 
-            if(len(e["nodes"])==2):#TODO make it dependent on the structure class name so it can be abstracted
+            if(len(e["nodes"])==2):
                 elements.append(e["nodes"])
             else:
                 raise ValueError("invalid element")
@@ -168,11 +193,9 @@ class PlaneEBBeamProblem:
                 cross_sec[i]=e["A"]
             if "I" in e:
                 bending_mod[i]=e["I"]
-            if "force" in e:
-                F_elements[n_nodes_per_element*i:n_nodes_per_element*i+3]=e["force"]
+            if "force" in e and len(e["force"])==2: #an element can only have 2 forces, axial and perpendicular (which get decomposed in also torque)
+                F_elements[n_nodes_per_element*i:n_nodes_per_element*i+2]=e["force"]
 
-
-        print(F_elements)
 
         #per element's type tbd
         #remaining question: should i directly solve it? answer yes
@@ -181,14 +204,11 @@ class PlaneEBBeamProblem:
         
         truss.solve(F_nodes, constraints, element_forces=F_elements, inclined_support=inclined_support)
         return truss
-    
 
     def ElementStiffness(self, element_index):    
         if element_index < 0 or element_index >= self.num_elements:
             raise ValueError(self.MESSAGE_ELEMENT_IDX)
         
-        theta = self.angles[element_index]
-        c, s = np.cos(theta), np.sin(theta)
         #error correction because cos(1)!=0 in python, it gives a small number but it annoys me
         # if s>c:
         #     a=np.sqrt(1-np.power(s,2))
@@ -200,15 +220,7 @@ class PlaneEBBeamProblem:
         K_local = self.__calc_k_local(element_index)
 
             # Build a 2-node transformation matrix for the two end nodes only
-        
-        
-        #LAST 
-        T = np.zeros((6, 6))
-        R = np.array([[c, s, 0],
-                    [-s, c, 0],
-                    [0,  0, 1]])
-        T[0:3, 0:3] = R
-        T[3:6, 3:6] = R
+        T=self.T[element_index]
         return T.T @ K_local @ T
     
     def assemble_global_stiffness(self):
@@ -221,8 +233,7 @@ class PlaneEBBeamProblem:
         """
         for i, e in enumerate(self.elements):
             k_elem = self.ElementStiffness(i)
-            #TODO make it generic
-            dof_indices = [dof for n in e for dof in (3*n, 3*n+1,3*n+2)]
+            dof_indices = [self.element_type * n + i for n in e for i in range(self.element_type)]
             for a, da in enumerate(dof_indices):
                 for b, db in enumerate(dof_indices):
                     self.k_global[da, db] += k_elem[a, b]
@@ -246,14 +257,13 @@ class PlaneEBBeamProblem:
             self.set_inclined_support(inclined_support)
             
         # 2. Define total degrees of freedom (3 DOFs per node: u, v, theta)
-        total_dofs = 3 * self.num_nodes
-        
+        total_dofs = self.element_type * self.num_nodes
+
         # 3. Partition the global stiffness matrix and force vector
         # Ensure your set_external_constraints_and_forces method handles total_dofs correctly!
         k_free, f_free, free_dof_indices = self.set_external_constraints_and_forces(
             constrained_dofs, external_forces, element_forces, total_dofs
         )
-        
         # 4. Solve for displacements at unconstrained (free) DOFs
         free_displacements = np.linalg.solve(k_free, f_free)
         
@@ -263,8 +273,7 @@ class PlaneEBBeamProblem:
         
         # 6. Store flat and reshaped tracking matrices attributes for post-processing/plotting
         self.displacements = displacements
-        self.displacements_matrix = displacements.reshape(-1, 3) 
-        
+        self.displacements_matrix = displacements.reshape(-1, self.element_type) 
         return displacements
     
 # ___________________________________________________________________
@@ -288,7 +297,7 @@ class PlaneEBBeamProblem:
         if node_index < 0 or node_index >= self.num_nodes:
             raise ValueError(self.MESSAGE_NODE_IDX)
         #2 because there are only the end nodes here, so is not representing the dofs
-        return self.displacements[3*node_index], self.displacements[3*node_index + 1]
+        return self.displacements[self.element_type*node_index], self.displacements[self.element_type*node_index + 1]
     
 
     def get_displacement_on_element(self, element_index, x):
@@ -310,31 +319,14 @@ class PlaneEBBeamProblem:
             raise ValueError("Node position out of range.")
         
         L = self.L[element_index]
-        theta = self.angles[element_index]
-        c, s = np.cos(theta), np.sin(theta)
         nodes = self.elements[element_index]
         n_nodes = len(nodes)
 
-        total_dofs=3*self.nodes_per_elem
-        N= np.zeros((2, total_dofs))
-        N_bar_eval  = self.shape_functions_array_bar[n_nodes](x, L)
-        N_beam_eval = self.shape_functions_array_beam[n_nodes](x, L)
-
         displacements = self.displacements_matrix[nodes].flatten()
-        for j in range(n_nodes):
-            N[0, 3 * j] = N_bar_eval[j]
-            
-            N[1, 3 * j + 1] = N_beam_eval[2 * j]     
-            N[1, 3 * j + 2] = N_beam_eval[2 * j + 1]
-
-        T = np.zeros((6, 6))
-        R = np.array([[c, s, 0],
-                    [-s, c, 0],
-                    [0,  0, 1]])
-        T[0:3, 0:3] = R
-        T[3:6, 3:6] = R
         
-        return R[:2, :2].T @ N @ T @ displacements #global to local to global
+        N = self.shape_functions_matrix[self.element_type][n_nodes](x, L)
+        
+        return self.R[element_index][:2, :2].T @ N @ self.T[element_index] @ displacements #global to local to global
 
     def get_reaction_forces(self):
         """
@@ -344,7 +336,7 @@ class PlaneEBBeamProblem:
         np.ndarray: Reaction forces.
         
         """
-        reaction_forces = self.k_global @ self.displacements[:3*self.num_original_nodes]
+        reaction_forces = self.k_global @ self.displacements[:self.element_type*self.num_original_nodes]
         self.reaction_forces = reaction_forces
         return reaction_forces
     
@@ -364,37 +356,13 @@ class PlaneEBBeamProblem:
             raise ValueError(self.MESSAGE_ELEMENT_IDX)
 
         L = self.L[element_index]
-        theta = self.angles[element_index]
-        c, s = np.cos(theta), np.sin(theta)
         nodes = self.elements[element_index]
         n_nodes = len(nodes)
         
-        T = np.zeros((3*n_nodes, 3*n_nodes))
-        R = np.array([[c, s, 0 ], 
-                      [-s, c, 0], 
-                      [0, 0, 1 ]])
-        for j in range(n_nodes):
-            T[3*j:3*j+3, 3*j:3*j+3] = R
+        d_local = self.T[element_index] @ self.displacements_matrix[nodes].flatten()
 
-        d_local = T @ self.displacements_matrix[nodes].flatten()
-
-        #TODO find a way to make it generic
-        total_dofs=3*n_nodes
-
-        B = np.zeros((2, total_dofs))
-        B_bar_eval  = self.strain_dispacement_array_bar[n_nodes](xi, L)
-        B_beam_eval = self.strain_dispacement_array_beam[n_nodes](xi, L)
-
-        for j in range(n_nodes):
-            # Row 0: Axial strain maps to the axial translation DOF
-            B[0, 3 * j] = B_bar_eval[j]
-            
-            # Row 1: Bending curvature maps to transverse and rotational DOFs
-            B[1, 3 * j + 1] = B_beam_eval[2 * j]     # v derivative
-            B[1, 3 * j + 2] = B_beam_eval[2 * j + 1] # theta derivative
-            
+        B = self.strain_dispacement_matrix[n_nodes](xi, L)
         return self.E[element_index] * B @ d_local
-    
     
     def get_element_force(self, element_index, x=0.0):
         """
@@ -448,39 +416,35 @@ class PlaneEBBeamProblem:
 
     def get_position_over_element(self, element_index, xi):
         L = self.L[element_index]
-        theta = self.angles[element_index]
-        c, s = np.cos(theta), np.sin(theta)
         nodes = self.elements[element_index]
         n_nodes = len(nodes)
 
-        N = np.zeros((2, 3 * n_nodes))
-
-       # Shape must be (n_nodes, 3) so flatten gives [x0,y0,0, x1,y1,0]
-        nodes_with_angles = np.zeros((n_nodes, 3))
+        #TODO do something about this ugly thing
+        nodes_with_angles = np.zeros((n_nodes, self.element_type))
         for i, n in enumerate(nodes):
             nodes_with_angles[i, :2] = self.nodes[n]   # row per node, not column
         nodes_with_angles = nodes_with_angles.flatten()
 
-        N_bar_eval = self.shape_functions_array_bar[n_nodes](xi, L)
-        N_beam_eval = self.shape_functions_array_beam[n_nodes](xi, L)
+        N = self.shape_functions_matrix[self.element_type][n_nodes](xi,L)
 
-        R = np.array([[c,  s, 0],
-                    [-s, c, 0],
-                    [0,  0, 1]])
 
-        T = np.zeros((3 * n_nodes, 3 * n_nodes))
-        for j in range(n_nodes):
-            T[3*j:3*j+3, 3*j:3*j+3] = R
+        return self.R[element_index][:2, :2].T @ N @ self.T[element_index] @ nodes_with_angles #return global position over of a point over the element
 
-        for j in range(n_nodes):
-            N[0, 3*j]     = N_bar_eval[j]
-            N[1, 3*j + 1] = N_beam_eval[2*j]
-            N[1, 3*j + 2] = N_beam_eval[2*j + 1]
-
-        return R[:2, :2].T @ N @ T @ nodes_with_angles #return global position over of a point over the element
-        
     def get_position_displaced(self,element_index, xi,k):
         return self.get_position_over_element(element_index,xi) + self.get_displacement_on_element(element_index,xi) * k
+    
+    def get_translation_matrix(self, element_index):
+        theta = self.angles[element_index]
+        c, s = np.cos(theta), np.sin(theta)
+        #TODO put it somewhere outside such that it can be generialized at the beginning
+        T = np.zeros((6, 6))
+        R = np.array([[c, s, 0],
+                    [-s, c, 0],
+                    [0,  0, 1]])
+        T[0:3, 0:3] = R
+        T[3:6, 3:6] = R
+        return R , T
+
 # ___________________________________________________________________
 # 
 #   SET FUNCTIONS
@@ -500,12 +464,12 @@ class PlaneEBBeamProblem:
                 raise ValueError(self.MESSAGE_NODE_IDX)
             angle = node_and_angles[node_index]
             
-            transformation_matrix = np.eye(3 * self.num_original_nodes)
+            transformation_matrix = np.eye(self.element_type * self.num_original_nodes)
             x = np.deg2rad(angle)  # Convert angle to radians)
-            transformation_matrix[3*node_index, 3*node_index] = np.cos(x)
-            transformation_matrix[3*node_index, 3*node_index + 1] = np.sin(x)
-            transformation_matrix[3*node_index + 1, 3*node_index] = -np.sin(x)
-            transformation_matrix[3*node_index + 1, 3*node_index + 1] = np.cos(x)
+            transformation_matrix[self.element_type*node_index, self.element_type*node_index] = np.cos(x)
+            transformation_matrix[self.element_type*node_index, self.element_type*node_index + 1] = np.sin(x)
+            transformation_matrix[self.element_type*node_index + 1, self.element_type*node_index] = -np.sin(x)
+            transformation_matrix[self.element_type*node_index + 1, self.element_type*node_index + 1] = np.cos(x)
             self.k_global = transformation_matrix @ self.k_global @ (transformation_matrix.T)
     
     def set_external_constraints(self, constrained_dofs,n_constraints):
@@ -554,54 +518,41 @@ class PlaneEBBeamProblem:
 #
 #   HELPER FUNCTIONS
 #
-# _________________________________________________________________external_forces=self.reduce_forces(external_forces)__
-    #TODO fix for beam
+# ___________________________________________________________________
+    
     #TODO: make it for a generic q, not only constantm should be easy, just need to also integrate it over l
     def __distribute_forces(self, element_forces, n_constraints):
         final_array = np.zeros(n_constraints)
-        
-        for i, p in enumerate(element_forces):
+        for i, p in enumerate(element_forces.reshape(-1, 2)):
             # Skip unassigned or zero forces to maximize performance
-            if np.isclose(p, 0.0):
+            if np.allclose(p, 0.0):
                 continue
                 
-            elem_idx = i // 2
-            nodes_in_elements = self.elements[elem_idx]
-            L = self.L[elem_idx]
-            n_nodes = len(nodes_in_elements)
+            nodes_in_elements = self.elements[i]
+            destinations= [self.element_type*n + dof for n in nodes_in_elements for dof in range(self.element_type)]
+            L = self.L[i]
+            nodes = self.elements[i]
+            n_nodes = len(nodes)
             
             # 3 Gauss points are exact for polynomial shape function load integration
             n_gauss = 3            
             points, weights = np.polynomial.legendre.leggauss(n_gauss)
             
             # Initialize local element equivalent nodal force vector (3 DOFs per node)
-            Q_local = np.zeros(3 * n_nodes)
+            Q = np.zeros((self.element_type*n_nodes,len(p)))
+            N_func = self.shape_functions_matrix[self.element_type][n_nodes]
             
-            N_bar_func = self.shape_functions_array_bar[n_nodes]
-            N_beam_func = self.shape_functions_array_beam[n_nodes]
+
             
             for xi, w in zip(points, weights):
-                if i % 2 == 0:
-                    # Row 0: Axial distributed load (qx) maps to axial DOF (u)
-                    N_bar_eval = N_bar_func(xi, L)  # Array of size: (n_nodes,)
-                    for j in range(n_nodes):
-                        Q_local[3 * j] += w * N_bar_eval[j] * p * (L / 2)
-                else:
-                    # Row 1: Transverse distributed load (qy) maps to lateral (v) and rotational (theta) DOFs
-                    N_beam_eval = N_beam_func(xi, L)  # Array of size: (2 * n_nodes,)
-                    for j in range(n_nodes):
-                        Q_local[3 * j + 1] += w * N_beam_eval[2 * j] * p * (L / 2)     # Transverse force v
-                        Q_local[3 * j + 2] += w * N_beam_eval[2 * j + 1] * p * (L / 2) # Equivalent moment theta
-                        
-            # Map the local element force vector directly into the global force array
-            for j, node_idx in enumerate(nodes_in_elements):
-                final_array[3 * node_idx]     += Q_local[3 * j]
-                final_array[3 * node_idx + 1] += Q_local[3 * j + 1]
-                final_array[3 * node_idx + 2] += Q_local[3 * j + 2]
-                
+                N = N_func(xi, L)                        # (n_nodes,)
+                Q += w * self.T[i].T @ N.T @ self.R[i][:2, :2] * (L / 2)
+            final_array[destinations]+= Q @ p #p(2) -> final_array (6)
+            
         return final_array
         
     def __calc_k_local(self,element_index):
+        L = self.L[element_index]
         n_nodes = len(self.elements[element_index])
         
         # Use 3 Gauss points for exact polynomial integration
@@ -609,41 +560,25 @@ class PlaneEBBeamProblem:
         n_gauss = 3
         points, weights = np.polynomial.legendre.leggauss(n_gauss)
         
-        L = self.L[element_index]
         EA = self.A[element_index] * self.E[element_index]
-        EI = self.I[element_index] * self.E[element_index]
+        EI=0
+        if self.element_type == 3:# if euler bernoulli
+            EI = self.I[element_index] * self.E[element_index]
         
         # Material property matrix (2x2)
+        #TODO moove it somewhere earlier
         D = np.array([
             [EA,  0.0],
             [0.0, EI ]
         ])
-        
-        B_bar_func = self.strain_dispacement_array_bar[n_nodes]
-        B_beam_func = self.strain_dispacement_array_beam[n_nodes]
 
         # Integration Loop over Gauss points
-        total_dofs = 3 * n_nodes
+        total_dofs = self.element_type * n_nodes
         K_local = np.zeros((total_dofs, total_dofs))
         for xi, w in zip(points, weights):
-            B = np.zeros((2, total_dofs))
-            
-            
-            B_bar_eval = B_bar_func(xi, L) 
-            B_beam_eval = B_beam_func(xi, L)  
-            
-            # Generic mapping loop over individual nodes
-            for j in range(n_nodes):
-                # Row 0: Axial strain maps to the axial translation DOF
-                B[0, 3 * j] = B_bar_eval[j]
-                
-                # Row 1: Bending curvature maps to transverse and rotational DOFs
-                B[1, 3 * j + 1] = B_beam_eval[2 * j]     # v derivative
-                B[1, 3 * j + 2] = B_beam_eval[2 * j + 1] # theta derivative
-            
+            B = self.strain_dispacement_matrix[n_nodes](xi,L)
             # Perform matrix multiplication and accumulate with Jacobian scaling (L/2)
             K_local += w * (B.T @ D @ B) * (L / 2)
-
         return K_local
     
     def __into_array_if_not(self,E) -> np.ndarray:
@@ -670,14 +605,15 @@ class PlaneEBBeamProblem:
             if "constraints" in n:
                 for c in n["constraints"]:
                     #add theta only if euler bernoully
+                    #TODO this doesn't generalize, fix it, get the element type from __load_file
                     if c!="ux" and c!="uy" and c!="theta":
                         raise ValueError(f"{c} is not a valid constraint for this type of structure")
                     elif c=="ux":
-                        constraints.append(i*3)
+                        constraints.append(i*cls.element_type)
                     elif c=="uy":
-                        constraints.append(i*3+1)
+                        constraints.append(i*cls.element_type+1)
                     else:
-                        constraints.append(i*3+2)
+                        constraints.append(i*cls.element_type+2)
             #inclined support
             if "inclined_support" in n:
                 inclined_support[i]=n["inclined_support"]
@@ -685,28 +621,25 @@ class PlaneEBBeamProblem:
             if "force" in n:
                     for j,f in enumerate(n["force"]): 
                         if f!=0:
-                            applied_forces[i*3+j]=f
-                        
+                            applied_forces[i*cls.element_type+j]=f
         return nodes, constraints, inclined_support, applied_forces
     
     #TODO fix this, reconsider completely all possibilities to cover all edge cases
     #E.G i add a force on a middle node but i'm using a linear element
     def __reshape_force_vector(self,external_forces, total_dofs, free_dof_indices)-> np.ndarray:
         if isinstance(external_forces, dict):
-            print("dict given")
             f_global = np.zeros(total_dofs)
             for dof, val in external_forces.items():
                 f_global[dof] = val
             external_forces = f_global
         else:
-            print("array given")
             external_forces = np.asarray(external_forces)
             # Backward-compatibility fallback: if input matches number of free DOFs
             if external_forces.ndim == 1 and external_forces.shape[0] == len(free_dof_indices):
                 f_global = np.zeros(total_dofs)
                 f_global[free_dof_indices] = external_forces
                 external_forces = f_global
-            elif external_forces.shape[0]!=self.num_nodes*3:
+            elif external_forces.shape[0]!=self.num_nodes*self.element_type:
                 raise ValueError(f"external_forces length ({external_forces.shape[0]}) must match "
                                  f"total DOFs ({total_dofs}) or free DOFs ({len(free_dof_indices)}).")
         return external_forces
@@ -717,7 +650,7 @@ class PlaneEBBeamProblem:
 #
 # ___________________________________________________________________
 
-    def plot_plane_truss(self, show_node_indices=True, show_element_indices=True, show_deformed=False, scale_factor=1.0, num_samples=20, stress_to_plot="bending",norm_type="linear"):
+    def plot_plane_truss(self, show_node_indices=True, show_element_indices=True, show_deformed=False, scale_factor=1.0, num_samples=20, stress_to_plot="bending", norm_type="linear"):
         """
         Function to plot the plane truss:
         - Elements are represented as lines connecting the nodes.
@@ -748,8 +681,9 @@ class PlaneEBBeamProblem:
         all_y = self.nodes[:, 1]
         bbox_diag = np.hypot(np.ptp(all_x) or 1.0, np.ptp(all_y) or 1.0)
         support_offset = bbox_diag * 0.04  # Distance of the support symbol from the node
+        node_label_offset = bbox_diag * 0.03  # Robust static offset for node labels
     
-        if has_disp:    
+        if has_disp:
             all_stresses = []
             for i in range(self.num_elements):
                 L_i = self.L[i]
@@ -757,7 +691,6 @@ class PlaneEBBeamProblem:
                     x_local = (xi + 1) * L_i / 2
                     stress_vec = self.get_element_stress(i, x_local)
                     
-                    # FIX: Only append the stress component you actually plan to paint
                     if stress_to_plot == "axial":
                         all_stresses.append(stress_vec[0])
 
@@ -766,7 +699,7 @@ class PlaneEBBeamProblem:
                     else:
                         all_stresses.extend(stress_vec.tolist())
                         
-            max_abs_stress = np.max(np.abs(all_stresses))
+            max_abs_stress = np.max(np.abs(all_stresses)) if len(all_stresses) > 0 else 0.0
     
             vmin_stress = -max_abs_stress
             vmax_stress = max_abs_stress
@@ -788,7 +721,7 @@ class PlaneEBBeamProblem:
             sm.set_array([])
     
         # ── Loop through each element and plot ──────────────────────────────────
-        for i in range(self.num_elements):        
+        for i in range(self.num_elements):
             if show_deformed and has_disp:
                 plot_positions = np.array([self.get_position_displaced(i, xi, scale_factor) for xi in xi_vals])
             else:
@@ -805,54 +738,55 @@ class PlaneEBBeamProblem:
             segments = np.concatenate([points[:-1], points[1:]], axis=1)
             seg_stresses = (stresses[:-1] + stresses[1:]) / 2.0
     
+            # Always draw a faint gray background line underneath the colored segments
+            # This handles low/zero stress visibility issues beautifully
+            ax.plot(plot_positions[:, 0], plot_positions[:, 1], color='lightgrey', linewidth=4, alpha=1, zorder=2)
+    
             if has_disp:
-                colors = [cmap(norm(s)) for s in seg_stresses]
+                lc = LineCollection(segments, cmap=cmap, norm=norm, alpha=1, zorder=3) # type: ignore
+                lc.set_array(seg_stresses)
             else:
-                colors = ['steelblue'] * len(segments)
- 
-            lc = LineCollection(segments.tolist(), colors=colors, linewidth=2.5, zorder=3)
+                lc = LineCollection(segments, colors='blue', zorder=3) # type: ignore
+    
+            lc.set_linewidth(4)
             ax.add_collection(lc)
- 
+    
             if show_element_indices:
-                mid = plot_positions[len(plot_positions) // 2]
-                ax.text(mid[0], mid[1], f"E{i}", color='navy', fontsize=9,
-                        ha='center', va='bottom', zorder=6)
-                
-        # ── Original structure ghost ─────────────────────────────────────────────
+                mid_idx = num_samples // 2
+                mid_x, mid_y = plot_positions[mid_idx]
+                ax.text(mid_x, mid_y, f"E{i}", color='black', fontsize=10, ha='center', va='center',
+                        bbox={"facecolor":'white', "edgecolor":'black', "boxstyle":'round,pad=0.2', "alpha":0.8}, zorder=6)
+    
+        # ── Original structure ghost (Undeformed) ─────────────────────────────────
         if show_deformed and has_disp:
             for i, e in enumerate(self.elements):
                 n1, n2 = e[0], e[-1]
                 x1, y1 = self.nodes[n1]
                 x2, y2 = self.nodes[n2]
                 ax.plot([x1, x2], [y1, y2], color='#5E5E5E', linestyle='--', linewidth=1.5, alpha=0.4,
-                        label='Original' if i == 0 else "")
+                        label='Original' if i == 0 else "", zorder=1)
     
         # ── Node markers, labels, and boundary conditions ─────────────────────────
         node_positions = self.nodes.copy()
         if show_deformed and has_disp:
-            node_positions += self.displacements_matrix[:, :2] * scale_factor
+            node_positions += self.displacements_matrix[:,:2] * scale_factor
     
         for i, (nx, ny) in enumerate(node_positions):
             # Base node circle marker
             ax.plot(nx, ny, 'ko', markersize=5, zorder=4)
             
+            # FIX: Used global robust offset bound instead of scale_factor product
             if show_node_indices:
-                ax.text(nx, ny + (0.05 * scale_factor if scale_factor != 1 else 0.05), f"N{i}",
-                        color='black', fontsize=11, fontweight='bold', ha='center', va='bottom')
+                ax.text(nx, ny + node_label_offset, f"N{i}",
+                        color='black', fontsize=11, fontweight='bold', ha='center', va='bottom', zorder=5)
             
             # ── BOUNDARY CONDITION PLOTTING LOGIC ───────────────────────────────
             is_ux_constrained = False
             is_uy_constrained = False
             
-            # 1. Fallback Option A: check if a node_constraints dictionary/list attribute exists
-            # if hasattr(self, 'constrained_dofs') and self.constrained_dofs is not None:
-            #     con = self.constrained_dofs[i]
-            #     if 'ux' in con: is_ux_constrained = True
-            #     if 'uy' in con: is_uy_constrained = True
-            # 2. Fallback Option B: check global global DOF constraint arrays (2*i = ux, 2*i+1 = uy)
             if hasattr(self, 'constrained_dofs') and self.constrained_dofs is not None:
-                if 3 * i in self.constrained_dofs: is_ux_constrained = True
-                if 3 * i + 1 in self.constrained_dofs: is_uy_constrained = True
+                if self.element_type * i in self.constrained_dofs: is_ux_constrained = True
+                if self.element_type * i + 1 in self.constrained_dofs: is_uy_constrained = True
             
             # Draw vertical restraint (slides horizontally): '^' under the node
             if is_uy_constrained:
@@ -873,15 +807,13 @@ class PlaneEBBeamProblem:
             if np.isclose(max_force, 0):
                 max_force = 1.0
     
-            
-            
             for node_idx in range(self.num_nodes):
-                dof_x = 3 * node_idx
-                dof_y = 3 * node_idx + 1
- 
+                dof_x = self.element_type * node_idx
+                dof_y = self.element_type * node_idx + 1
+    
                 if dof_x >= len(forces):
                     break
- 
+    
                 fx = forces[dof_x]
                 fy = forces[dof_y] if dof_y < len(forces) else 0.0
     
@@ -909,6 +841,7 @@ class PlaneEBBeamProblem:
                         color="darkorange",
                         lw=2.0,
                     ),
+                    zorder=5
                 )
     
                 label = f"{magnitude:.3g} N"
@@ -928,12 +861,13 @@ class PlaneEBBeamProblem:
                     va="center",
                     bbox=dict(facecolor="white", edgecolor="darkorange",
                             boxstyle="round,pad=0.2", alpha=0.85),
+                    zorder=6
                 )
     
         # ── Colorbar ─────────────────────────────────────────────────────────────
         if has_disp:
             cbar = fig.colorbar(sm, ax=ax) # type: ignore
-            label_text = "Axial Stress [Pa] (Log Scale)" if norm_type == "log" else "Axial Stress [Pa]"
+            label_text = f"{stress_to_plot.capitalize()} Stress [Pa] (Log Scale)" if norm_type == "log" else f"{stress_to_plot.capitalize()} Stress [Pa]"
             cbar.set_label(label_text, rotation=270, labelpad=15)
     
         # ── Formatting ───────────────────────────────────────────────────────────

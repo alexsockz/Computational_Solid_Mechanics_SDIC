@@ -1,7 +1,7 @@
 defaults:
   E: 210e9
   A: 0.01
-  shape_func: quadratic
+  shape_func: linear
 
 nodes:
   - id: 0

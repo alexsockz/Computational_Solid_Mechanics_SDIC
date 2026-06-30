@@ -39,18 +39,18 @@ nodes:
 elements:
   - id: 0
     nodes: [0, 1]
-    force: [0,-50000,0]
+    # force: [0,-30000,0]
     # uses global E and A
 
   - id: 1
     nodes: [1, 2]
-    force: [0,-50000,0]
+    force: [0,-50000]
     # E: 70e9                    # override: aluminum
     # A: 0.005                   # override: thinner
 
   - id: 2
     nodes: [2, 3]
-    force: [0,-50000,0]
+    # force: [0,-30000,0]
 
   - id: 3
     nodes: [0, 4]

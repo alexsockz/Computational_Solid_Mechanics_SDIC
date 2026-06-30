@@ -11,9 +11,9 @@ nodes:
   - id: 1
     x: 1.0
     y: 0.0
-    force: [0,1,0]
-    constraints: [ux,theta]
+    constraints: [ux]
 
 elements:
   - id: 0
+    force: [0,1]
     nodes: [0, 1]
