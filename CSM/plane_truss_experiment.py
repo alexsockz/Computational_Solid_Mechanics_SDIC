@@ -8,7 +8,7 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import yaml
 
-class PlaneEBBeamProblem:
+class PlaneTrussProblem:
     """Class for solving 2D plane truss problems."""
 
 # ___________________________________________________________________
@@ -19,7 +19,10 @@ class PlaneEBBeamProblem:
     MESSAGE_NODE_IDX="Node index out of range."
     MESSAGE_ELEMENT_IDX="Element index out of range."
 
-
+    D = {
+        2: lambda EA, EI: np.array([[EA]]),
+        3: lambda EA, EI: np.array([EA,0],[0,EI])
+    }
     shape_functions_matrix = {
         2: lambda x, l: np.array([
             [(1-x)/2,       0,   (x+1)/2,       0],  # u(x) interpolation
@@ -125,7 +128,7 @@ class PlaneEBBeamProblem:
 
         # After static condensation the mid-nodes are eliminated from the global
         # system, so k_global is sized on the original structural nodes only.
-        self.k_global = np.zeros((self.element_type * self.num_nodes, self.element_type * self.num_nodes))
+        self.k_global = np.zeros((self.element_type * self.num_original_nodes, self.element_type * self.num_original_nodes))
 
 
     @classmethod
@@ -151,7 +154,6 @@ class PlaneEBBeamProblem:
 
         bending_mod = None
         if "forces" in structure["defaults"]:
-            #TODO might be wrong, might create a 2d matrix instead of an array
             F_elements=np.full(2*n_elem,structure["defaults"]["forces"])
         else:
             F_elements=np.zeros(2*n_elem)
@@ -198,10 +200,13 @@ class PlaneEBBeamProblem:
         #     a=np.sqrt(1-np.power(c,2))
         #     s=a if a<s else s
 
-        K_local = self.__calc_k_local(element_index)
+        if self.shape_func== "linear":
+            K_local = self.__calc_k_local(element_index)
+        else:
+            K_local, _, _, _, _=self.__calc_k_local(element_index)
 
             # Build a 2-node transformation matrix for the two end nodes only
-        T=self.T[element_index]
+        T = self.T[element_index][:4,:4]
         return T.T @ K_local @ T
     
     def assemble_global_stiffness(self):
@@ -214,19 +219,59 @@ class PlaneEBBeamProblem:
         """
         for i, e in enumerate(self.elements):
             k_elem = self.ElementStiffness(i)
+            if self.shape_func == "quadratic":
+                # After static condensation k_elem is 4x4 (end nodes only).
+                # e = [n1, mid, n2]; end nodes are e[0] and e[-1].
+                e= np.delete(e,1)
             dof_indices = [self.element_type * n + i for n in e for i in range(self.element_type)]
-            print(e,i)
-            print(dof_indices)
-            print(self.k_global)
-            print(k_elem)
             for a, da in enumerate(dof_indices):
                 for b, db in enumerate(dof_indices):
                     self.k_global[da, db] += k_elem[a, b]
         return self.k_global
 
-    def solve(self, external_forces, constrained_dofs, element_forces=[], inclined_support=None):
+#TODO make it generic for N mid nodes
+    def _build_force_reduction_matrix(self):
         """
-        Solve the Euler-Bernoulli beam frame problem for given external forces and constraints.
+        Assemble the Guyan reduction operator C such that:
+            f_reduced = C @ f_full
+        
+        C starts as [I | 0] (extract active DOFs), then for each element
+        the mid-node condensation block is subtracted in:
+            C[active_rows, mid_cols] -= factor * I_2x2
+        """
+        n_active = self.element_type * self.num_original_nodes
+        n_total  = self.element_type * self.num_nodes
+        C = np.eye(n_active, n_total)   # [I | 0]: identity on active DOFs, zero on mid-node DOFs
+
+        for e_idx in range(self.num_elements):
+            _, _, K_ai, K_ii_inv, _ = self.__calc_k_local(e_idx)
+            condenser = K_ai @ K_ii_inv  # (4,1): Guyan allocation matrix
+
+            n1, mid, n2 = self.elements[e_idx, [0, 1, -1]]
+            f_n1 = condenser[0, 0]
+            f_n2 = condenser[2, 0]
+
+            # Subtract the 2x2 identity block scaled by each factor.
+            # This distributes both x and y mid-node force components equally,
+            # consistent with the isotropic axial-only condensation.
+            C[np.ix_([2*n1,   2*n1+1], [2*mid, 2*mid+1])] -= f_n1 * np.eye(2)
+            C[np.ix_([2*n2,   2*n2+1], [2*mid, 2*mid+1])] -= f_n2 * np.eye(2)
+
+        return C
+
+    def reduce_forces(self, external_forces):
+        if self.shape_func == "linear":
+            return external_forces[:self.element_type * self.num_original_nodes]
+
+        if not hasattr(self, '_C_reduction'):
+            self._C_reduction = self._build_force_reduction_matrix()
+
+        return self._C_reduction @ external_forces
+
+
+    def solve(self, external_forces, constrained_dofs, element_forces=[], inclined_support={}):
+        """
+        Solve the truss problem for the given external forces and constraints.
 
         Parameters:
         external_forces (np.ndarray or dict): External forces/moments applied to the nodes/DOFs.
@@ -246,19 +291,54 @@ class PlaneEBBeamProblem:
 
         # 3. Partition the global stiffness matrix and force vector
         # Ensure your set_external_constraints_and_forces method handles total_dofs correctly!
-        k_free, f_free, free_dof_indices = self.set_external_constraints_and_forces(
-            constrained_dofs, external_forces, element_forces, total_dofs
-        )
+        k_free, f_free, free_dof_indices = self.set_external_constraints_and_forces(constrained_dofs, external_forces, element_forces, total_dofs)
         # 4. Solve for displacements at unconstrained (free) DOFs
+
         free_displacements = np.linalg.solve(k_free, f_free)
-        
         # 5. Reconstruct the full global displacements vector
         displacements = np.zeros(total_dofs)
         displacements[free_dof_indices] = free_displacements
-        
-        # 6. Store flat and reshaped tracking matrices attributes for post-processing/plotting
+        self.displacements_matrix=displacements.reshape(-1, self.element_type)
+        if self.shape_func == "quadratic":
+            for element_index in range(self.num_elements):
+                nodes = self.elements[element_index]
+                #TODO MAKE IT GENERIC FOR N NODES IN THE MIDDLE
+                n1, mid, n2 = nodes[0], nodes[1], nodes[-1]
+                
+                # 1. Get full 4-element global displacements for end nodes
+                destinations_active = [self.element_type * n + dof for n in [n1, n2] for dof in range(self.element_type)]
+                d_global_active = displacements[destinations_active]
+                
+                # 2. Transform active displacements to local frame
+
+                T= self.T[element_index][:4,:4]
+                R = self.R[element_index]
+                d_local_active = T @ d_global_active
+
+                # 3. Rebuild K_local parts
+                _, _, _, K_ii_inv, K_ia = self.__calc_k_local(element_index)
+
+                # 4. Transform mid-node global forces to local frame (2 elements)
+                f_mid_global = self.external_forces[self.element_type*mid:self.element_type*(mid+1)]
+                f_i_local = R @ f_mid_global  # Shape (2,) -> [local_axial, local_transverse]
+
+                # 5. Correct back-substitution (yields local axial displacement)
+                f_axial_local = np.array([f_i_local[0]])  # Isolate only the local axial force component
+                u_axial_local = K_ii_inv @ (f_axial_local - K_ia @ d_local_active)  # Shape (1,)
+                
+                # The local transverse displacement is simply the average of the end-nodes' transverse DOFs
+                # d_local_active indices: [u1, v1, u2, v2] -> v1 is index 1, v2 is index 3
+                v_transverse_local = 0.5 * (d_local_active[1] + d_local_active[3])
+                
+                # Combine back into a full 2D local mid-node displacement vector
+                u_mid_local = np.array([u_axial_local[0], v_transverse_local])  # Shape (2,)
+
+                # 6. Transform local mid-node displacements back to global frame
+                d_mid_global = R.T @ u_mid_local  # (2,2) @ (2,) -> Shape (2,)
+
+                displacements[self.element_type*mid:self.element_type*(mid+1)] = d_mid_global
+        self.displacements_matrix=displacements.reshape(-1, self.element_type)
         self.displacements = displacements
-        self.displacements_matrix = displacements.reshape(-1, self.element_type) 
         return displacements
     
 # ___________________________________________________________________
@@ -405,7 +485,7 @@ class PlaneEBBeamProblem:
         nodes = self.elements[element_index]
         n_nodes = len(nodes)
 
-        #TODO do something about this ugly thing
+        #needed to expand the position and calculate the N of the end nodes, obviously they have 0 angle change at the beginning
         nodes_with_angles = np.zeros((n_nodes, self.element_type))
         for i, n in enumerate(nodes):
             nodes_with_angles[i, :2] = self.nodes[n]   # row per node, not column
@@ -495,6 +575,7 @@ class PlaneEBBeamProblem:
         self.external_forces=self.external_forces+distributed_forces
         external_forces=self.external_forces
         # calculate how to get rid of mid nodes
+        external_forces=self.reduce_forces(external_forces)
 
         #gets rid of constrained dofs
         free_dof_indices_reduced=np.setdiff1d(np.arange(len(external_forces)), constrained_dofs)
@@ -513,7 +594,6 @@ class PlaneEBBeamProblem:
         for i, p in enumerate(element_forces.reshape(-1, 2)):
             # Skip unassigned or zero forces to maximize performance
             if np.allclose(p, 0.0):
-
                 continue
                 
             nodes_in_elements = self.elements[i]
@@ -531,14 +611,11 @@ class PlaneEBBeamProblem:
             # Initialize local element equivalent nodal force vector (3 DOFs per node)
             Q = np.zeros((self.element_type*n_nodes,len(p)))
             N_func = self.shape_functions_matrix[n_nodes]
-            
 
-            
             for xi, w in zip(points, weights):
                 N = N_func(xi, L)                        # (n_nodes,)
                 Q += w * self.T[i].T @ N.T @ self.R[i][:2, :2] * (L / 2)
             final_array[destinations]+= Q @ p #p(2) -> final_array (6)
-            
         return final_array
         
     def __calc_k_local(self,element_index):
@@ -553,12 +630,12 @@ class PlaneEBBeamProblem:
         points, weights = np.polynomial.legendre.leggauss(n_gauss)
         
         EA = self.A[element_index] * self.E[element_index]
+        EI=0
         if self.element_type == 3:# if euler bernoulli
             EI = self.I[element_index] * self.E[element_index]
         
         # Material property matrix (2x2)
-        #TODO moove it somewhere earlier
-        D =[[EA]]
+        D =self.D[self.element_type](EA,EI)
 
         # Integration Loop over Gauss points
         total_dofs = self.element_type * n_nodes
@@ -567,6 +644,23 @@ class PlaneEBBeamProblem:
             B = self.strain_dispacement_matrix[n_nodes](xi,L)
             # Perform matrix multiplication and accumulate with Jacobian scaling (L/2)
             K_local += w * (B.T @ D @ B) * (L / 2)
+        print(K_local)
+        if self.shape_func == "quadratic":
+            # Static condensation: eliminate the internal mid-node (local index 1).
+            # Local node ordering is [n1(0), mid(1), n2(2)].
+            # Active (end) nodes: indices [0,1 , 4,5]; internal (mid) node: index [2], only axial forces are considered in the truss, the inclusion of [3] would cause singular matrix.
+            active = [0, 1, 4, 5]
+            # Internal condensed DOF: Node 1 Axial only (2)
+            internal = [2]
+
+            K_aa = K_local[np.ix_(active, active)]      # 4x4
+            K_ai = K_local[np.ix_(active, internal)]    # 4x1
+            K_ia = K_local[np.ix_(internal, active)]    # 1x4
+            K_ii = K_local[np.ix_(internal, internal)]  # 1x1
+
+            K_ii_inv = np.linalg.inv(K_ii)
+            K_local = K_aa - K_ai @ K_ii_inv @ K_ia
+            return K_local, K_aa, K_ai, K_ii_inv, K_ia
         return K_local
     
     def __into_array_if_not(self,E) -> np.ndarray:
@@ -578,7 +672,6 @@ class PlaneEBBeamProblem:
             raise ValueError("input value is neither a valid number nor an array of numbers")
         
     def __add_mid_node(self):
-        print(self.shape_func)
         nodes_per_element = {"quadratic": 3, "cubic": 4}[self.shape_func]
         n_interior = nodes_per_element - 2  # 1 for quadratic, 2 for cubic
         num_seg = nodes_per_element - 1
@@ -614,14 +707,13 @@ class PlaneEBBeamProblem:
             if "constraints" in n:
                 for c in n["constraints"]:
                     #add theta only if euler bernoully
-                    #TODO this doesn't generalize, fix it, get the element type from __load_file
                     if c!="ux" and c!="uy" and c!="theta":
                         raise ValueError(f"{c} is not a valid constraint for this type of structure")
                     elif c=="ux":
                         constraints.append(i*cls.element_type)
                     elif c=="uy":
                         constraints.append(i*cls.element_type+1)
-                    else:
+                    elif c!="theta" and cls.element_type==3:
                         constraints.append(i*cls.element_type+2)
             #inclined support
             if "inclined_support" in n:
@@ -845,11 +937,11 @@ class PlaneEBBeamProblem:
                     "",
                     xy=(tip_x, tip_y),           
                     xytext=(tail_x, tail_y),      
-                    arrowprops=dict(
-                        arrowstyle="->,head_width=0.4,head_length=0.15",
-                        color="darkorange",
-                        lw=2.0,
-                    ),
+                    arrowprops={
+                        "arrowstyle":"->,head_width=0.4,head_length=0.15",
+                        "color":"darkorange",
+                        "lw":2.0,
+                    },
                     zorder=5
                 )
     
@@ -868,8 +960,8 @@ class PlaneEBBeamProblem:
                     fontweight="bold",
                     ha="center",
                     va="center",
-                    bbox=dict(facecolor="white", edgecolor="darkorange",
-                            boxstyle="round,pad=0.2", alpha=0.85),
+                    bbox={"facecolor":"white", "edgecolor":"darkorange",
+                            "boxstyle":"round,pad=0.2", "alpha":0.85},
                     zorder=6
                 )
     
