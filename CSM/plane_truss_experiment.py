@@ -181,7 +181,7 @@ class PlaneTrussProblem:
 
         #per element's type tbd
         #remaining question: should i directly solve it? answer yes
-        truss= PlaneEBBeamProblem(nodes=nodes,elements=elements,elasticity_modulus=elastic_mod,cross_sectional_area=cross_sec,bending_modulus=bending_mod,shape_func=shape_func)
+        truss= PlaneTrussProblem(nodes=nodes,elements=elements,elasticity_modulus=elastic_mod,cross_sectional_area=cross_sec,bending_modulus=bending_mod,shape_func=shape_func)
         truss.assemble_global_stiffness()
         
         truss.solve(F_nodes, constraints, element_forces=F_elements, inclined_support=inclined_support)
